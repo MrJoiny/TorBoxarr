@@ -1,6 +1,7 @@
 package compat_test
 
 import (
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -129,14 +130,34 @@ func TestProjectQBitTorrent(t *testing.T) {
 	if info.MagnetURI != *job.SourceURI {
 		t.Errorf("MagnetURI = %q, want %q", info.MagnetURI, *job.SourceURI)
 	}
-	if info.SavePath != completed {
-		t.Errorf("SavePath = %q, want %q", info.SavePath, completed)
+	wantSavePath := filepath.Dir(completed)
+	if info.SavePath != wantSavePath {
+		t.Errorf("SavePath = %q, want %q", info.SavePath, wantSavePath)
+	}
+	if info.ContentPath != completed {
+		t.Errorf("ContentPath = %q, want %q", info.ContentPath, completed)
 	}
 	if info.Tags != "radarr,imported" {
 		t.Errorf("Tags = %q, want %q", info.Tags, "radarr,imported")
 	}
 	if info.Size != 2048 {
 		t.Errorf("Size = %d, want 2048", info.Size)
+	}
+}
+
+func TestProjectQBitTorrent_UsesParentAsSavePathForStaging(t *testing.T) {
+	job := baseJob()
+	staging := "/staging/qb-001"
+	job.StagingPath = &staging
+
+	info := compat.ProjectQBitTorrent(job)
+
+	wantSavePath := filepath.Dir(staging)
+	if info.SavePath != wantSavePath {
+		t.Errorf("SavePath = %q, want %q", info.SavePath, wantSavePath)
+	}
+	if info.ContentPath != staging {
+		t.Errorf("ContentPath = %q, want %q", info.ContentPath, staging)
 	}
 }
 

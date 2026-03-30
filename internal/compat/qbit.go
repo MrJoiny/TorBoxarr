@@ -1,6 +1,7 @@
 package compat
 
 import (
+	"path/filepath"
 	"strings"
 
 	"github.com/mrjoiny/torboxarr/internal/store"
@@ -85,16 +86,7 @@ func ProjectQBitTransferInfo(jobs []*store.Job) QBitTransferInfo {
 func ProjectQBitTorrent(job *store.Job) QBitTorrentInfo {
 	progress := projectQBitProgress(job)
 	state := projectQBitState(job)
-	savePath := ""
-	contentPath := ""
-	switch {
-	case job.CompletedPath != nil:
-		savePath = *job.CompletedPath
-		contentPath = *job.CompletedPath
-	case job.StagingPath != nil:
-		savePath = *job.StagingPath
-		contentPath = *job.StagingPath
-	}
+	savePath, contentPath := qbitPathsForJob(job)
 
 	completedOn := int64(0)
 	if job.State == store.StateCompleted {
@@ -133,6 +125,23 @@ func ProjectQBitTorrent(job *store.Job) QBitTorrentInfo {
 		TotalSize:    max(job.BytesTotal, job.BytesDone),
 		Upspeed:      0,
 	}
+}
+
+func qbitPathsForJob(job *store.Job) (savePath, contentPath string) {
+	switch {
+	case job.CompletedPath != nil:
+		contentPath = strings.TrimSpace(*job.CompletedPath)
+	case job.StagingPath != nil:
+		contentPath = strings.TrimSpace(*job.StagingPath)
+	default:
+		return "", ""
+	}
+
+	savePath = filepath.Dir(contentPath)
+	if savePath == "." {
+		savePath = ""
+	}
+	return savePath, contentPath
 }
 
 func projectQBitProgress(job *store.Job) float64 {
