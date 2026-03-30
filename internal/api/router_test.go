@@ -547,8 +547,24 @@ func TestSABQueue(t *testing.T) {
 
 	var resp map[string]json.RawMessage
 	json.NewDecoder(rec.Body).Decode(&resp)
-	if _, ok := resp["queue"]; !ok {
+	queueJSON, ok := resp["queue"]
+	if !ok {
 		t.Error("expected 'queue' key in response")
+	}
+
+	var queue struct {
+		Slots []struct {
+			Percentage any `json:"percentage"`
+		} `json:"slots"`
+	}
+	if err := json.Unmarshal(queueJSON, &queue); err != nil {
+		t.Fatalf("decode queue: %v", err)
+	}
+	if len(queue.Slots) != 1 {
+		t.Fatalf("got %d queue slots, want %d", len(queue.Slots), 1)
+	}
+	if _, ok := queue.Slots[0].Percentage.(float64); !ok {
+		t.Fatalf("percentage type = %T, want numeric JSON value", queue.Slots[0].Percentage)
 	}
 }
 

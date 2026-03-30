@@ -34,7 +34,7 @@ type SABQueueSlot struct {
 	Cat        string `json:"cat"`
 	MB         string `json:"mb"`
 	MBLeft     string `json:"mbleft"`
-	Percentage string `json:"percentage"`
+	Percentage int    `json:"percentage"`
 	Status     string `json:"status"`
 	TimeLeft   string `json:"timeleft"`
 	Priority   string `json:"priority"`
@@ -118,7 +118,7 @@ func ProjectSABQueueSlot(job *store.Job) SABQueueSlot {
 		Cat:        job.Category,
 		MB:         fmt.Sprintf("%.2f", totalMB),
 		MBLeft:     fmt.Sprintf("%.2f", leftMB),
-		Percentage: fmt.Sprintf("%.2f", percent(job.BytesDone, job.BytesTotal)),
+		Percentage: percent(job.BytesDone, job.BytesTotal),
 		Status:     projectSABQueueStatus(job.State),
 		TimeLeft:   "0:00:00",
 		Priority:   "Normal",
@@ -215,12 +215,18 @@ func bytesToMB(v int64) float64 {
 	return math.Round((float64(v)/(1024*1024))*100) / 100
 }
 
-func percent(done, total int64) float64 {
+func percent(done, total int64) int {
 	if total <= 0 {
 		return 0
 	}
 	p := (float64(done) / float64(total)) * 100
-	return math.Round(p*100) / 100
+	if p < 0 {
+		return 0
+	}
+	if p > 100 {
+		return 100
+	}
+	return int(math.Round(p))
 }
 
 func NormalizeSABNZOID(v string) string {

@@ -40,6 +40,9 @@ func TestProjectSABQueueSlot(t *testing.T) {
 	if slot.MBLeft != "5.00" {
 		t.Errorf("MBLeft = %q, want %q", slot.MBLeft, "5.00")
 	}
+	if slot.Percentage != 50 {
+		t.Errorf("Percentage = %d, want %d", slot.Percentage, 50)
+	}
 }
 
 func TestProjectSABHistorySlot(t *testing.T) {
