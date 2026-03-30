@@ -1,13 +1,10 @@
 services:
     torboxarr:
-        image: torboxarr:test
+        image: mrjoiny/torboxarr:latest
         restart: unless-stopped
         ports:
             - "127.0.0.1:8085:8085"
         env_file:
             - ../.env
         volumes:
-            - torboxarr-data:/data
-
-volumes:
-    torboxarr-data:
+            - ../data:/data

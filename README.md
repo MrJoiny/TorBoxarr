@@ -83,7 +83,7 @@ For usenet, add a SABnzbd download client:
 docker compose -f deploy/docker-compose.yml up -d
 ```
 
-The compose file mounts a `torboxarr-data` volume at `/data` and reads `../.env` for configuration. The container uses a distroless base image.
+The compose file bind-mounts `../data` into `/data` and reads `../.env` for configuration, so the database and downloaded files stay visible on the host. The container uses a distroless base image.
 
 ### From source
 
@@ -140,5 +140,5 @@ internal/
   worker/            Background worker loops (submit, poll, download, finalize, remove, prune)
 deploy/
   Dockerfile         Multi-stage build, distroless runtime
-  docker-compose.yml Minimal compose setup
+  docker-compose.yml Minimal compose setup, bind-mounting ../data
 ```
