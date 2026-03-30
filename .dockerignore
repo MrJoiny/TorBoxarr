@@ -1,0 +1,9 @@
+.git
+.gocache
+bin
+data
+Plans
+*.exe
+*.db
+coverage.out
+GO_PROJECT_REVIEW_CHECKLIST.md

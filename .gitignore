@@ -1,0 +1,25 @@
+# Build outputs
+/bin/
+/*.exe
+/*.exe~
+/*.dll
+/*.so
+/*.dylib
+
+# Go tooling
+/.gocache/
+/coverage.out
+
+# Runtime data
+/data/
+
+# Local configuration and secrets
+/.env
+/.env.*
+!/.env.example
+
+# IDE and OS files
+/.idea/
+/.vscode/
+/.DS_Store
+Thumbs.db
