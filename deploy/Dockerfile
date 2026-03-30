@@ -11,6 +11,5 @@ FROM gcr.io/distroless/static-debian12
 WORKDIR /app
 COPY --from=build /out/torboxarr /app/torboxarr
 COPY --from=build --chown=65532:65532 /out/var/lib/torboxarr /var/lib/torboxarr
-USER 65532:65532
 EXPOSE 8085
 ENTRYPOINT ["/app/torboxarr"]
