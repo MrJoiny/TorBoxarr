@@ -673,6 +673,84 @@ func TestSABQueue(t *testing.T) {
 	}
 }
 
+func TestSABQueue_UsesLocalTransferPartsForProgressAndTimeLeft(t *testing.T) {
+	env := newTestEnv(t)
+	now := time.Now().UTC()
+
+	job := &store.Job{
+		ID:            "sab-local-001",
+		PublicID:      "sab-local-public-001",
+		SourceType:    store.SourceTypeNZB,
+		ClientKind:    store.ClientKindSAB,
+		Category:      "tv",
+		State:         store.StateLocalDownloading,
+		SubmissionKey: "sab-local-key-001",
+		DisplayName:   "Local Downloading NZB",
+		CreatedAt:     now.Add(-1 * time.Hour),
+		UpdatedAt:     now.Add(-1 * time.Hour),
+	}
+	if err := env.store.CreateJob(context.Background(), job); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+
+	part := &store.TransferPart{
+		JobID:         job.ID,
+		PartKey:       "file-001",
+		SourceURL:     "https://example.com/file.bin",
+		TempPath:      filepath.Join(t.TempDir(), "file.bin"),
+		RelativePath:  "file.bin",
+		ContentLength: 1000,
+		BytesDone:     500,
+		CreatedAt:     now.Add(-10 * time.Second),
+		UpdatedAt:     now,
+	}
+	if err := env.store.UpsertTransferPart(context.Background(), part); err != nil {
+		t.Fatalf("UpsertTransferPart: %v", err)
+	}
+
+	queueParams := url.Values{
+		"mode":   {"queue"},
+		"apikey": {"sabapikey123"},
+	}
+	req := httptest.NewRequest("GET", "/sabnzbd/api?"+queueParams.Encode(), nil)
+	rec := httptest.NewRecorder()
+	env.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var resp struct {
+		Queue struct {
+			Slots []struct {
+				Percentage int    `json:"percentage"`
+				TimeLeft   string `json:"timeleft"`
+				MB         string `json:"mb"`
+				MBLeft     string `json:"mbleft"`
+			} `json:"slots"`
+		} `json:"queue"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp.Queue.Slots) != 1 {
+		t.Fatalf("got %d queue slots, want 1", len(resp.Queue.Slots))
+	}
+	slot := resp.Queue.Slots[0]
+	if slot.Percentage != 50 {
+		t.Errorf("Percentage = %d, want 50", slot.Percentage)
+	}
+	if slot.TimeLeft != "0:00:10" {
+		t.Errorf("TimeLeft = %q, want %q", slot.TimeLeft, "0:00:10")
+	}
+	if slot.MB != "0.00" {
+		t.Errorf("MB = %q, want %q", slot.MB, "0.00")
+	}
+	if slot.MBLeft != "0.00" {
+		t.Errorf("MBLeft = %q, want %q", slot.MBLeft, "0.00")
+	}
+}
+
 func TestSABHistory(t *testing.T) {
 	env := newTestEnv(t)
 

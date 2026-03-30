@@ -104,6 +104,11 @@ func (s *Server) handleQBitTransferInfo(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	jobs, err = s.withLocalTransferProgress(r.Context(), jobs)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	writeJSON(w, http.StatusOK, compat.ProjectQBitTransferInfo(jobs))
 }
 
@@ -209,6 +214,11 @@ func (s *Server) handleQBitAdd(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleQBitInfo(w http.ResponseWriter, r *http.Request) {
 	category := strings.TrimSpace(r.URL.Query().Get("category"))
 	jobs, err := s.store.ListVisibleClientJobs(r.Context(), store.ClientKindQBit, category, 1000)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	jobs, err = s.withLocalTransferProgress(r.Context(), jobs)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return

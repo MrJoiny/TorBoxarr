@@ -1,8 +1,10 @@
 package compat
 
 import (
+	"math"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/mrjoiny/torboxarr/internal/store"
 )
@@ -212,24 +214,15 @@ func qbitDLSpeed(job *store.Job) int64 {
 	if job.State != store.StateLocalDownloading {
 		return 0
 	}
-	if job.BytesDone <= 0 {
-		return 0
-	}
-	// Use elapsed time since job creation as an approximation. This slightly
-	// underestimates actual download speed (includes queue/remote wait time)
-	// but avoids a schema migration for a dedicated download_started_at field.
-	elapsed := job.UpdatedAt.Sub(job.CreatedAt)
-	if elapsed <= 0 {
-		return 0
-	}
-	return job.BytesDone / int64(elapsed.Seconds())
+	return int64(localTransferRate(job))
 }
 
 func qbitETA(job *store.Job) int64 {
-	if job.State != store.StateLocalDownloading || job.BytesDone <= 0 || job.BytesTotal <= job.BytesDone {
+	seconds := localTransferETA(job)
+	if seconds <= 0 {
 		return 0
 	}
-	return -1
+	return seconds
 }
 
 func clamp(v float64) float64 {
@@ -241,4 +234,48 @@ func clamp(v float64) float64 {
 	default:
 		return v
 	}
+}
+
+func localTransferRate(job *store.Job) float64 {
+	if job.State != store.StateLocalDownloading {
+		return 0
+	}
+	done, _ := projectLocalTransferBytes(job)
+	if done <= 0 {
+		return 0
+	}
+	startedAt := localTransferStartedAt(job)
+	if startedAt == nil {
+		return 0
+	}
+	elapsed := job.UpdatedAt.Sub(*startedAt)
+	if elapsed <= 0 {
+		return 0
+	}
+	return float64(done) / elapsed.Seconds()
+}
+
+func localTransferETA(job *store.Job) int64 {
+	if job.State != store.StateLocalDownloading {
+		return 0
+	}
+	done, total := projectLocalTransferBytes(job)
+	if done <= 0 || total <= done {
+		return 0
+	}
+	rate := localTransferRate(job)
+	if rate <= 0 {
+		return 0
+	}
+	return int64(math.Ceil(float64(total-done) / rate))
+}
+
+func localTransferStartedAt(job *store.Job) *time.Time {
+	if job.LocalDownloadStartedAt != nil {
+		return job.LocalDownloadStartedAt
+	}
+	if job.State != store.StateLocalDownloading {
+		return nil
+	}
+	return &job.CreatedAt
 }

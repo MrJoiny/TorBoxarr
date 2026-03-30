@@ -59,35 +59,36 @@ type SubmissionMetadata struct {
 }
 
 type Job struct {
-	ID               string
-	PublicID         string
-	SourceType       SourceType
-	ClientKind       ClientKind
-	Category         string
-	State            JobState
-	SubmissionKey    string
-	RemoteID         *string
-	QueuedID         *string
-	QueueAuthID      *string
-	RemoteHash       *string
-	DisplayName      string
-	InfoHash         *string
-	SourceURI        *string
-	PayloadRef       *string
-	StagingPath      *string
-	CompletedPath    *string
-	BytesTotal       int64
-	BytesDone        int64
-	ErrorMessage     *string
-	RetryCount       int
-	NextRunAt        *time.Time
-	LastRemoteStatus *string
-	Metadata         SubmissionMetadata
-	DeleteRequested  bool
-	ClaimedBy        *string
-	ClaimedAt        *time.Time
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	ID                     string
+	PublicID               string
+	SourceType             SourceType
+	ClientKind             ClientKind
+	Category               string
+	State                  JobState
+	SubmissionKey          string
+	RemoteID               *string
+	QueuedID               *string
+	QueueAuthID            *string
+	RemoteHash             *string
+	DisplayName            string
+	InfoHash               *string
+	SourceURI              *string
+	PayloadRef             *string
+	StagingPath            *string
+	CompletedPath          *string
+	BytesTotal             int64
+	BytesDone              int64
+	LocalDownloadStartedAt *time.Time
+	ErrorMessage           *string
+	RetryCount             int
+	NextRunAt              *time.Time
+	LastRemoteStatus       *string
+	Metadata               SubmissionMetadata
+	DeleteRequested        bool
+	ClaimedBy              *string
+	ClaimedAt              *time.Time
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
 }
 
 type TransferPart struct {

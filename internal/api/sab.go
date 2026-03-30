@@ -305,6 +305,11 @@ func (s *Server) handleSABQueue(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return
 	}
+	jobs, err = s.withLocalTransferProgress(r.Context(), jobs)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
 	writeJSON(w, http.StatusOK, compat.ProjectSABQueue(s.cfg.Compatibility.SABVersion, jobs))
 }
 
@@ -314,6 +319,11 @@ func (s *Server) handleSABHistory(w http.ResponseWriter, r *http.Request) {
 		category = ""
 	}
 	jobs, err := s.store.ListVisibleClientJobs(r.Context(), store.ClientKindSAB, category, 1000)
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+		return
+	}
+	jobs, err = s.withLocalTransferProgress(r.Context(), jobs)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
 		return

@@ -121,7 +121,7 @@ func ProjectSABQueueSlot(job *store.Job) SABQueueSlot {
 		MBLeft:     fmt.Sprintf("%.2f", leftMB),
 		Percentage: percent(done, total),
 		Status:     projectSABQueueStatus(job.State),
-		TimeLeft:   "0:00:00",
+		TimeLeft:   projectSABTimeLeft(job),
 		Priority:   "Normal",
 		PP:         projectSABPP(job.Metadata.PostProcessing),
 		Script:     "None",
@@ -228,6 +228,17 @@ func percent(done, total int64) int {
 		return 100
 	}
 	return int(math.Round(p))
+}
+
+func projectSABTimeLeft(job *store.Job) string {
+	seconds := localTransferETA(job)
+	if seconds <= 0 {
+		return "0:00:00"
+	}
+	hours := seconds / 3600
+	minutes := (seconds % 3600) / 60
+	secs := seconds % 60
+	return fmt.Sprintf("%d:%02d:%02d", hours, minutes, secs)
 }
 
 func NormalizeSABNZOID(v string) string {
