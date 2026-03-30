@@ -83,7 +83,7 @@ For usenet, add a SABnzbd download client:
 docker compose -f deploy/docker-compose.yml up -d
 ```
 
-The compose file bind-mounts `../data` into `/data` for downloads and payloads, stores the SQLite database at `/config/torboxarr.db` inside the container filesystem, and reads `../.env` for configuration. The container uses a distroless base image.
+The compose file bind-mounts `../data` into `/data` for downloads and payloads, stores the SQLite database at `/config/torboxarr.db` in Docker-managed internal storage, and reads `../.env` for configuration. The container uses a distroless base image.
 
 ### From source
 

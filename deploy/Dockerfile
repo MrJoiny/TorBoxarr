@@ -11,5 +11,6 @@ FROM gcr.io/distroless/static-debian12
 WORKDIR /app
 COPY --from=build /out/torboxarr /app/torboxarr
 COPY --from=build --chown=65532:65532 /out/config /config
+VOLUME ["/config"]
 EXPOSE 8085
 ENTRYPOINT ["/app/torboxarr"]
