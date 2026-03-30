@@ -40,8 +40,8 @@ func TestApplyEnvUsesMinimalSurface(t *testing.T) {
 	if cfg.Data.Root != "/srv/torboxarr" {
 		t.Fatalf("Data.Root = %q, want env value", cfg.Data.Root)
 	}
-	if cfg.Database.Path != filepath.Join("/srv/torboxarr", "torboxarr.db") {
-		t.Fatalf("Database.Path = %q, want derived path", cfg.Database.Path)
+	if cfg.Database.Path != "/config/torboxarr.db" {
+		t.Fatalf("Database.Path = %q, want fixed default path", cfg.Database.Path)
 	}
 	if cfg.Auth.QBitUsername != defaultQBitUser {
 		t.Fatalf("Auth.QBitUsername = %q, want %q", cfg.Auth.QBitUsername, defaultQBitUser)
@@ -67,6 +67,22 @@ func TestApplyEnvAllowsExplicitSABNZBKey(t *testing.T) {
 
 	if cfg.Auth.SABNZBKey != "resolved-sab-nzb-key" {
 		t.Fatalf("Auth.SABNZBKey = %q, want explicit override", cfg.Auth.SABNZBKey)
+	}
+}
+
+func TestApplyDerivedPreservesExplicitDatabasePath(t *testing.T) {
+	cfg := defaultConfig()
+	cfg.Data.Root = "/srv/torboxarr"
+	wantDBPath := filepath.Join(t.TempDir(), "custom", "torboxarr.db")
+	cfg.Database.Path = wantDBPath
+
+	cfg.applyDerived()
+
+	if cfg.Database.Path != wantDBPath {
+		t.Fatalf("Database.Path = %q, want explicit value preserved", cfg.Database.Path)
+	}
+	if cfg.Data.Staging != filepath.Join("/srv/torboxarr", "staging") {
+		t.Fatalf("Data.Staging = %q, want derived staging path", cfg.Data.Staging)
 	}
 }
 

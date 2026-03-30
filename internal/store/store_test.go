@@ -2,11 +2,41 @@ package store_test
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/mrjoiny/torboxarr/internal/store"
 )
+
+func TestOpenCreatesParentDir(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "db", "nested", "torboxarr.db")
+
+	db, err := store.Open(ctx, dbPath, 5*time.Second)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+
+	if _, err := os.Stat(filepath.Dir(dbPath)); err != nil {
+		t.Fatalf("Stat(parent) = %v, want existing parent dir", err)
+	}
+	if _, err := os.Stat(dbPath); err != nil {
+		t.Fatalf("Stat(dbPath) = %v, want created sqlite file", err)
+	}
+}
+
+func TestOpenMemoryPath(t *testing.T) {
+	ctx := context.Background()
+
+	db, err := store.Open(ctx, ":memory:", 5*time.Second)
+	if err != nil {
+		t.Fatalf("Open(:memory:) = %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+}
 
 // ─── CreateJob ───────────────────────────────────────────────────────────────
 

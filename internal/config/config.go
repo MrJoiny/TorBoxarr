@@ -12,9 +12,10 @@ import (
 )
 
 const (
-	defaultDataRoot   = "/data"
-	defaultQBitUser   = "admin"
-	defaultServerAddr = ":8085"
+	defaultDataRoot     = "/data"
+	defaultDatabasePath = "/config/torboxarr.db"
+	defaultQBitUser     = "admin"
+	defaultServerAddr   = ":8085"
 )
 
 type Config struct {
@@ -98,6 +99,7 @@ func defaultConfig() Config {
 	cfg.Server.Address = defaultServerAddr
 	cfg.Server.BaseURL = "http://localhost:8085"
 	cfg.Logging.Level = "INFO"
+	cfg.Database.Path = defaultDatabasePath
 	cfg.Database.BusyTimeout = 5 * time.Second
 	cfg.Data.Root = defaultDataRoot
 	cfg.TorBox.BaseURL = "https://api.torbox.app/v1"
@@ -133,8 +135,12 @@ func (c *Config) applyDerived() {
 	if root == "" {
 		root = defaultDataRoot
 	}
+	dbPath := strings.TrimSpace(c.Database.Path)
+	if dbPath == "" {
+		dbPath = defaultDatabasePath
+	}
 	c.Data.Root = root
-	c.Database.Path = filepath.Join(root, "torboxarr.db")
+	c.Database.Path = dbPath
 	c.Data.Staging = filepath.Join(root, "staging")
 	c.Data.Completed = filepath.Join(root, "completed")
 	c.Data.Payloads = filepath.Join(root, "payloads")

@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -35,6 +37,12 @@ const jobColumns = `
 `
 
 func Open(ctx context.Context, path string, busyTimeout time.Duration) (*sql.DB, error) {
+	if path != ":memory:" {
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			return nil, fmt.Errorf("ensure sqlite parent dir: %w", err)
+		}
+	}
+
 	db, err := sql.Open("sqlite", path)
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)

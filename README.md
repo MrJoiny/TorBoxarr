@@ -58,7 +58,7 @@ Optional overrides:
 | Variable | Default | What it does |
 |---|---|---|
 | `TORBOXARR_SERVER_BASE_URL` | `http://localhost:8085` | Base URL the server reports to clients |
-| `TORBOXARR_DATA_ROOT` | `/data` | Root directory for the database, staging, completed files, and payloads |
+| `TORBOXARR_DATA_ROOT` | `/data` | Root directory for staging, completed files, and payloads |
 | `TORBOXARR_LOG_LEVEL` | `INFO` | Log verbosity: DEBUG, INFO, WARN, or ERROR |
 
 ### Connecting Sonarr/Radarr
@@ -83,7 +83,7 @@ For usenet, add a SABnzbd download client:
 docker compose -f deploy/docker-compose.yml up -d
 ```
 
-The compose file bind-mounts `../data` into `/data` and reads `../.env` for configuration, so the database and downloaded files stay visible on the host. The container uses a distroless base image.
+The compose file bind-mounts `../data` into `/data` for downloads and payloads, stores the SQLite database at `/config/torboxarr.db` inside the container filesystem, and reads `../.env` for configuration. The container uses a distroless base image.
 
 ### From source
 
@@ -92,10 +92,12 @@ go build -o bin/torboxarr ./cmd/torboxarr
 ./bin/torboxarr
 ```
 
+Direct binary runs use the same fixed database path as Docker: `/config/torboxarr.db`. This default is Docker-first, so make sure `/config` is writable on the host if you run from source.
+
 The binary runs database migrations automatically on startup, so you don't need to run goose separately unless you want to manage migrations by hand:
 
 ```bash
-goose -dir internal/store/migrations sqlite3 ./data/torboxarr.db up
+goose -dir internal/store/migrations sqlite3 /config/torboxarr.db up
 ```
 
 ## Development
