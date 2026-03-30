@@ -66,7 +66,8 @@ func ProjectQBitCategory(category, savePath string) QBitCategory {
 func ProjectQBitTransferInfo(jobs []*store.Job) QBitTransferInfo {
 	var dlInfoData, dlInfoSpeed int64
 	for _, job := range jobs {
-		dlInfoData += job.BytesDone
+		done, _ := projectLocalTransferBytes(job)
+		dlInfoData += done
 		if job.State == store.StateLocalDownloading {
 			dlInfoSpeed += 1
 		}
@@ -84,6 +85,7 @@ func ProjectQBitTransferInfo(jobs []*store.Job) QBitTransferInfo {
 }
 
 func ProjectQBitTorrent(job *store.Job) QBitTorrentInfo {
+	done, total := projectLocalTransferBytes(job)
 	progress := projectQBitProgress(job)
 	state := projectQBitState(job)
 	savePath, contentPath := qbitPathsForJob(job)
@@ -101,15 +103,15 @@ func ProjectQBitTorrent(job *store.Job) QBitTorrentInfo {
 	tags := strings.Join(job.Metadata.Tags, ",")
 	return QBitTorrentInfo{
 		AddedOn:      job.CreatedAt.Unix(),
-		AmountLeft:   max(job.BytesTotal-job.BytesDone, 0),
+		AmountLeft:   max(total-done, 0),
 		AutoTMM:      false,
 		Availability: 1,
 		Category:     job.Category,
-		Completed:    job.BytesDone,
+		Completed:    done,
 		CompletionOn: completedOn,
 		ContentPath:  contentPath,
 		DLSpeed:      qbitDLSpeed(job),
-		Downloaded:   job.BytesDone,
+		Downloaded:   done,
 		Eta:          qbitETA(job),
 		Hash:         job.PublicID,
 		InfohashV1:   job.PublicID,
@@ -119,10 +121,10 @@ func ProjectQBitTorrent(job *store.Job) QBitTorrentInfo {
 		Progress:     progress,
 		Ratio:        0,
 		SavePath:     savePath,
-		Size:         max(job.BytesTotal, job.BytesDone),
+		Size:         max(total, done),
 		State:        state,
 		Tags:         tags,
-		TotalSize:    max(job.BytesTotal, job.BytesDone),
+		TotalSize:    max(total, done),
 		Upspeed:      0,
 	}
 }
@@ -145,34 +147,41 @@ func qbitPathsForJob(job *store.Job) (savePath, contentPath string) {
 }
 
 func projectQBitProgress(job *store.Job) float64 {
+	done, total := projectLocalTransferBytes(job)
 	switch job.State {
 	case store.StateAccepted, store.StateSubmitPending, store.StateSubmitRetry:
 		return 0
 	case store.StateRemoteQueued:
-		return 0.02
+		return 0
 	case store.StateRemoteActive:
-		if job.BytesTotal > 0 && job.BytesDone > 0 {
-			return clamp(float64(job.BytesDone) / float64(job.BytesTotal))
-		}
-		return 0.05
+		return 0
 	case store.StateLocalDownloadPending:
-		return 0.1
+		return 0
 	case store.StateLocalDownloading:
-		if job.BytesTotal == 0 {
-			return 0.5
+		if total == 0 {
+			return 0
 		}
-		return clamp(float64(job.BytesDone) / float64(job.BytesTotal))
+		return clamp(float64(done) / float64(total))
 	case store.StateLocalVerify:
-		return 0.99
+		return 1
 	case store.StateCompleted, store.StateRemovePending:
 		return 1
 	case store.StateRemoteFailed, store.StateFailed:
-		if job.BytesTotal > 0 && job.BytesDone > 0 {
-			return clamp(float64(job.BytesDone) / float64(job.BytesTotal))
+		if total > 0 && done > 0 {
+			return clamp(float64(done) / float64(total))
 		}
 		return 0
 	default:
 		return 0
+	}
+}
+
+func projectLocalTransferBytes(job *store.Job) (done, total int64) {
+	switch job.State {
+	case store.StateLocalDownloading, store.StateLocalVerify, store.StateCompleted, store.StateRemovePending, store.StateFailed:
+		return max(job.BytesDone, 0), max(job.BytesTotal, 0)
+	default:
+		return 0, 0
 	}
 }
 

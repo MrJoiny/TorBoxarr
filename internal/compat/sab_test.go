@@ -45,6 +45,31 @@ func TestProjectSABQueueSlot(t *testing.T) {
 	}
 }
 
+func TestProjectSABQueueSlot_IgnoresRemoteProgress(t *testing.T) {
+	job := &store.Job{
+		PublicID:    "pub-sab-remote",
+		DisplayName: "Remote NZB",
+		Category:    "tv",
+		State:       store.StateRemoteActive,
+		BytesTotal:  10 * 1024 * 1024,
+		BytesDone:   5 * 1024 * 1024,
+		CreatedAt:   time.Now().UTC(),
+		UpdatedAt:   time.Now().UTC(),
+	}
+
+	slot := compat.ProjectSABQueueSlot(job)
+
+	if slot.MB != "0.00" {
+		t.Errorf("MB = %q, want %q", slot.MB, "0.00")
+	}
+	if slot.MBLeft != "0.00" {
+		t.Errorf("MBLeft = %q, want %q", slot.MBLeft, "0.00")
+	}
+	if slot.Percentage != 0 {
+		t.Errorf("Percentage = %d, want %d", slot.Percentage, 0)
+	}
+}
+
 func TestProjectSABHistorySlot(t *testing.T) {
 	staging := "/staging/job-001"
 	completed := "/completed/tv/show"

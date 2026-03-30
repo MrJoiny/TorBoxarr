@@ -40,17 +40,17 @@ func TestProjectQBitProgress_AllStates(t *testing.T) {
 		{store.StateAccepted, 0, 0, 0, 0},
 		{store.StateSubmitPending, 0, 0, 0, 0},
 		{store.StateSubmitRetry, 0, 0, 0, 0},
-		{store.StateRemoteQueued, 0, 0, 0.02, 0.02},
-		{store.StateRemoteActive, 1000, 500, 0.49, 0.51},
-		{store.StateRemoteActive, 0, 0, 0.05, 0.05},
-		{store.StateLocalDownloadPending, 0, 0, 0.1, 0.1},
+		{store.StateRemoteQueued, 0, 0, 0, 0},
+		{store.StateRemoteActive, 1000, 500, 0, 0},
+		{store.StateRemoteActive, 0, 0, 0, 0},
+		{store.StateLocalDownloadPending, 0, 0, 0, 0},
 		{store.StateLocalDownloading, 1000, 500, 0.49, 0.51},
-		{store.StateLocalDownloading, 0, 0, 0.5, 0.5},
-		{store.StateLocalVerify, 0, 0, 0.99, 0.99},
+		{store.StateLocalDownloading, 0, 0, 0, 0},
+		{store.StateLocalVerify, 0, 0, 1, 1},
 		{store.StateCompleted, 0, 0, 1, 1},
 		{store.StateRemovePending, 0, 0, 1, 1},
 		{store.StateRemoteFailed, 0, 0, 0, 0},
-		{store.StateRemoteFailed, 1000, 500, 0.49, 0.51},
+		{store.StateRemoteFailed, 1000, 500, 0, 0},
 		{store.StateFailed, 0, 0, 0, 0},
 	}
 
@@ -164,6 +164,7 @@ func TestProjectQBitTorrent_UsesParentAsSavePathForStaging(t *testing.T) {
 func TestProjectQBitTransferInfo(t *testing.T) {
 	jobs := []*store.Job{
 		{State: store.StateLocalDownloading, BytesDone: 100},
+		{State: store.StateRemoteActive, BytesDone: 999},
 		{State: store.StateCompleted, BytesDone: 500},
 		{State: store.StateLocalDownloading, BytesDone: 200},
 	}
@@ -177,6 +178,34 @@ func TestProjectQBitTransferInfo(t *testing.T) {
 	}
 	if info.DLInfoSpeed != 2 {
 		t.Errorf("DLInfoSpeed = %d, want 2 (two downloading jobs)", info.DLInfoSpeed)
+	}
+}
+
+func TestProjectQBitTorrent_IgnoresRemoteProgressBytes(t *testing.T) {
+	job := baseJob()
+	job.State = store.StateRemoteActive
+	job.BytesTotal = 2000
+	job.BytesDone = 1000
+
+	info := compat.ProjectQBitTorrent(job)
+
+	if info.Progress != 0 {
+		t.Errorf("Progress = %f, want 0", info.Progress)
+	}
+	if info.Downloaded != 0 {
+		t.Errorf("Downloaded = %d, want 0", info.Downloaded)
+	}
+	if info.Completed != 0 {
+		t.Errorf("Completed = %d, want 0", info.Completed)
+	}
+	if info.AmountLeft != 0 {
+		t.Errorf("AmountLeft = %d, want 0", info.AmountLeft)
+	}
+	if info.Size != 0 {
+		t.Errorf("Size = %d, want 0", info.Size)
+	}
+	if info.TotalSize != 0 {
+		t.Errorf("TotalSize = %d, want 0", info.TotalSize)
 	}
 }
 

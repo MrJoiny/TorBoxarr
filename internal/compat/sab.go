@@ -110,15 +110,16 @@ func ProjectSABHistory(version string, jobs []*store.Job) SABHistoryResponse {
 }
 
 func ProjectSABQueueSlot(job *store.Job) SABQueueSlot {
-	totalMB := bytesToMB(job.BytesTotal)
-	leftMB := bytesToMB(max(job.BytesTotal-job.BytesDone, 0))
+	done, total := projectLocalTransferBytes(job)
+	totalMB := bytesToMB(total)
+	leftMB := bytesToMB(max(total-done, 0))
 	return SABQueueSlot{
 		NzoID:      SABNZOID(job.PublicID),
 		Filename:   job.DisplayName,
 		Cat:        job.Category,
 		MB:         fmt.Sprintf("%.2f", totalMB),
 		MBLeft:     fmt.Sprintf("%.2f", leftMB),
-		Percentage: percent(job.BytesDone, job.BytesTotal),
+		Percentage: percent(done, total),
 		Status:     projectSABQueueStatus(job.State),
 		TimeLeft:   "0:00:00",
 		Priority:   "Normal",
