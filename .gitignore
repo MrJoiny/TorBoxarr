@@ -12,6 +12,7 @@
 
 # Runtime data
 /data/
+/%TEMP%/
 
 # Local configuration and secrets
 /.env
