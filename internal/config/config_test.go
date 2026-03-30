@@ -40,7 +40,7 @@ func TestApplyEnvUsesMinimalSurface(t *testing.T) {
 	if cfg.Data.Root != "/srv/torboxarr" {
 		t.Fatalf("Data.Root = %q, want env value", cfg.Data.Root)
 	}
-	if cfg.Database.Path != "/config/torboxarr.db" {
+	if cfg.Database.Path != "/var/lib/torboxarr/torboxarr.db" {
 		t.Fatalf("Database.Path = %q, want fixed default path", cfg.Database.Path)
 	}
 	if cfg.Auth.QBitUsername != defaultQBitUser {
@@ -83,6 +83,20 @@ func TestApplyDerivedPreservesExplicitDatabasePath(t *testing.T) {
 	}
 	if cfg.Data.Staging != filepath.Join("/srv/torboxarr", "staging") {
 		t.Fatalf("Data.Staging = %q, want derived staging path", cfg.Data.Staging)
+	}
+}
+
+func TestApplyEnvAllowsExplicitDatabasePath(t *testing.T) {
+	cfg := defaultConfig()
+	wantDBPath := filepath.Join(t.TempDir(), "state", "torboxarr.db")
+
+	t.Setenv("TORBOXARR_DATABASE_PATH", wantDBPath)
+
+	applyEnv(&cfg)
+	cfg.applyDerived()
+
+	if cfg.Database.Path != wantDBPath {
+		t.Fatalf("Database.Path = %q, want explicit env override", cfg.Database.Path)
 	}
 }
 

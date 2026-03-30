@@ -13,7 +13,7 @@ import (
 
 const (
 	defaultDataRoot     = "/data"
-	defaultDatabasePath = "/config/torboxarr.db"
+	defaultDatabasePath = "/var/lib/torboxarr/torboxarr.db"
 	defaultQBitUser     = "admin"
 	defaultServerAddr   = ":8085"
 )
@@ -163,6 +163,7 @@ func applyEnv(cfg *Config) {
 	setString(&cfg.Server.BaseURL, "TORBOXARR_SERVER_BASE_URL")
 	setString(&cfg.Logging.Level, "TORBOXARR_LOG_LEVEL")
 	setString(&cfg.Data.Root, "TORBOXARR_DATA_ROOT")
+	setString(&cfg.Database.Path, "TORBOXARR_DATABASE_PATH")
 
 	setString(&cfg.TorBox.APIToken, "TORBOXARR_TORBOX_API_TOKEN")
 	setString(&cfg.Auth.QBitPassword, "TORBOXARR_QBIT_PASSWORD")
