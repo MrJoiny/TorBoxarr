@@ -22,7 +22,7 @@ func (a *SABAuth) Allow(mode, key string) bool {
 	switch mode {
 	case "version", "auth":
 		return true
-	case "get_config", "get_cats":
+	case "get_config", "get_cats", "set_config":
 		return validKey
 	case "addurl", "addfile":
 		return validKey

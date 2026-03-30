@@ -470,6 +470,111 @@ func TestSABVersion(t *testing.T) {
 	}
 }
 
+func TestSABGetConfig_IncludesDefaultSuggestedCategories(t *testing.T) {
+	env := newTestEnv(t)
+
+	req := httptest.NewRequest("GET", "/sabnzbd/api?mode=get_config&apikey=sabapikey123", nil)
+	rec := httptest.NewRecorder()
+	env.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var resp struct {
+		Config struct {
+			Categories []struct {
+				Name string `json:"name"`
+				Dir  string `json:"dir"`
+			} `json:"categories"`
+		} `json:"config"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode config: %v", err)
+	}
+
+	seen := map[string]string{}
+	for _, category := range resp.Config.Categories {
+		seen[category.Name] = category.Dir
+	}
+
+	for _, name := range []string{"*", "movies", "tv", "audio", "software"} {
+		if _, ok := seen[name]; !ok {
+			t.Fatalf("expected %q category in config, got %v", name, seen)
+		}
+	}
+	if seen["tv"] != "tv" {
+		t.Errorf("tv dir = %q, want %q", seen["tv"], "tv")
+	}
+}
+
+func TestSABSetConfigCategory_CreatesCategoryVisibleToGetConfig(t *testing.T) {
+	env := newTestEnv(t)
+
+	params := url.Values{
+		"mode":    {"set_config"},
+		"section": {"categories"},
+		"name":    {"series"},
+		"apikey":  {"sabapikey123"},
+	}
+	req := httptest.NewRequest("GET", "/sabnzbd/api?"+params.Encode(), nil)
+	rec := httptest.NewRecorder()
+	env.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("set_config status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	req = httptest.NewRequest("GET", "/sabnzbd/api?mode=get_config&apikey=sabapikey123", nil)
+	rec = httptest.NewRecorder()
+	env.router.ServeHTTP(rec, req)
+
+	var resp struct {
+		Config struct {
+			Categories []struct {
+				Name string `json:"name"`
+				Dir  string `json:"dir"`
+			} `json:"categories"`
+		} `json:"config"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode config: %v", err)
+	}
+
+	found := false
+	for _, category := range resp.Config.Categories {
+		if category.Name == "series" {
+			found = true
+			if category.Dir != "series" {
+				t.Errorf("series dir = %q, want %q", category.Dir, "series")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected series category after set_config")
+	}
+}
+
+func TestSABConfigCategoriesPage(t *testing.T) {
+	env := newTestEnv(t)
+
+	req := httptest.NewRequest("GET", "/config/categories/", nil)
+	rec := httptest.NewRecorder()
+	env.router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	body := rec.Body.String()
+	if !strings.Contains(body, "SABnzbd Categories") {
+		t.Fatalf("expected categories page heading, got body %q", body)
+	}
+	if !strings.Contains(body, "tv") {
+		t.Fatalf("expected categories page to mention default tv category, got body %q", body)
+	}
+}
+
 func TestSABAddURL(t *testing.T) {
 	env := newTestEnv(t)
 

@@ -2,8 +2,10 @@ package api
 
 import (
 	"fmt"
+	"html"
 	"mime/multipart"
 	"net/http"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -43,7 +45,7 @@ func (s *Server) handleSABAPI(w http.ResponseWriter, r *http.Request) {
 	// NOTE: if a new mode is added that reads r.FormValue(), it must be
 	// included in this switch to ensure the body is parsed.
 	switch mode {
-	case "addurl", "addfile", "queue", "history":
+	case "addurl", "addfile", "queue", "history", "set_config":
 		if strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/") {
 			if err := r.ParseMultipartForm(2 << 20); err != nil { // 2 MB; NZBs are typically < 100 KB
 				writeJSON(w, http.StatusBadRequest, map[string]any{"error": "invalid multipart body"})
@@ -66,6 +68,8 @@ func (s *Server) handleSABAPI(w http.ResponseWriter, r *http.Request) {
 		s.handleSABGetCats(w, r)
 	case "get_scripts":
 		s.handleSABGetScripts(w, r)
+	case "set_config":
+		s.handleSABSetConfig(w, r)
 	case "addurl":
 		s.handleSABAddURL(w, r)
 	case "addfile":
@@ -90,19 +94,15 @@ func (s *Server) handleSABAPI(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSABGetConfig(w http.ResponseWriter, r *http.Request) {
-	categories := s.sabCategories(r)
+	categories := s.sabCategoryConfigs(r)
 	items := make([]map[string]any, 0, len(categories))
-	for _, category := range categories {
-		dir := ""
-		if category != "*" {
-			dir = filepath.Join(s.cfg.Data.Completed, category)
-		}
+	for i, category := range categories {
 		items = append(items, map[string]any{
-			"name":     category,
-			"order":    0,
+			"name":     category.Name,
+			"order":    i,
 			"pp":       "3",
 			"script":   "None",
-			"dir":      dir,
+			"dir":      category.Dir,
 			"newzbin":  "",
 			"priority": "-100",
 		})
@@ -130,7 +130,7 @@ func (s *Server) handleSABGetConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleSABGetCats(w http.ResponseWriter, r *http.Request) {
-	categories := s.sabCategories(r)
+	categories := s.sabCategoryNames(r)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"categories": categories,
 	})
@@ -140,6 +140,79 @@ func (s *Server) handleSABGetScripts(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"scripts": []string{"None"},
 	})
+}
+
+func (s *Server) handleSABSetConfig(w http.ResponseWriter, r *http.Request) {
+	section := strings.ToLower(strings.TrimSpace(firstNonEmpty(r.FormValue("section"), r.URL.Query().Get("section"))))
+	if section != "categories" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "unsupported section"})
+		return
+	}
+
+	name := strings.ToLower(strings.TrimSpace(firstNonEmpty(
+		r.FormValue("keyword"),
+		r.URL.Query().Get("keyword"),
+		r.FormValue("name"),
+		r.URL.Query().Get("name"),
+	)))
+	if name == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]any{"error": "category name is required"})
+		return
+	}
+
+	dir := strings.TrimSpace(firstNonEmpty(r.FormValue("dir"), r.URL.Query().Get("dir")))
+	if name != "*" && dir == "" {
+		dir = name
+	}
+	if dir != "" {
+		if err := os.MkdirAll(filepath.Join(s.cfg.Data.Completed, dir), 0o755); err != nil {
+			writeJSON(w, http.StatusInternalServerError, map[string]any{"error": err.Error()})
+			return
+		}
+	}
+
+	s.handleSABGetConfig(w, r)
+}
+
+func (s *Server) handleSABConfigCategories(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/config/categories" && r.URL.Path != "/config/categories/" {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		w.Header().Set("Allow", http.MethodGet)
+		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		return
+	}
+
+	categories := s.sabCategoryConfigs(r)
+
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+
+	var b strings.Builder
+	b.WriteString("<!doctype html><html><head><meta charset=\"utf-8\"><title>SABnzbd Categories</title></head><body>")
+	b.WriteString("<h1>SABnzbd Categories</h1>")
+	b.WriteString("<p>This compatibility view exists so Sonarr's SABnzbd help link does not 404. Category validation uses <code>mode=get_config</code>, not this page.</p>")
+	b.WriteString("<p>Current categories:</p><ul>")
+	for _, category := range categories {
+		b.WriteString("<li><strong>")
+		b.WriteString(html.EscapeString(category.Name))
+		b.WriteString("</strong>")
+		if category.Dir == "" {
+			b.WriteString(" - default path")
+		} else {
+			b.WriteString(" - ")
+			b.WriteString(html.EscapeString(filepath.Join(s.cfg.Data.Completed, category.Dir)))
+		}
+		b.WriteString("</li>")
+	}
+	b.WriteString("</ul>")
+	b.WriteString("<p>To add a custom category, create a subfolder under <code>")
+	b.WriteString(html.EscapeString(s.cfg.Data.Completed))
+	b.WriteString("</code> or call <code>/sabnzbd/api?mode=set_config&amp;section=categories&amp;name=YOUR_CATEGORY&amp;apikey=...</code>.</p>")
+	b.WriteString("</body></html>")
+	_, _ = w.Write([]byte(b.String()))
 }
 
 func (s *Server) handleSABAddURL(w http.ResponseWriter, r *http.Request) {
@@ -327,31 +400,90 @@ func multipartFiles(form *multipart.Form, keys ...string) []*multipart.FileHeade
 	return files
 }
 
-func (s *Server) sabCategories(r *http.Request) []string {
+type sabCategoryConfig struct {
+	Name string
+	Dir  string
+}
+
+func (s *Server) sabCategoryNames(r *http.Request) []string {
+	configs := s.sabCategoryConfigs(r)
+	names := make([]string, 0, len(configs))
+	for _, category := range configs {
+		names = append(names, category.Name)
+	}
+	return names
+}
+
+func (s *Server) sabCategoryConfigs(r *http.Request) []sabCategoryConfig {
 	jobs, err := s.store.ListVisibleClientJobs(r.Context(), store.ClientKindSAB, "", 1000)
 	if err != nil {
-		return []string{s.cfg.Compatibility.DefaultCategory}
+		return s.defaultSABCategories()
 	}
 
-	seen := map[string]struct{}{}
-	var categories []string
-	add := func(value string) {
-		value = strings.TrimSpace(value)
-		if value == "" {
+	seen := map[string]sabCategoryConfig{}
+	add := func(name, dir string) {
+		name = strings.TrimSpace(name)
+		dir = strings.TrimSpace(dir)
+		if name == "" {
 			return
 		}
-		if _, ok := seen[value]; ok {
+		if _, ok := seen[name]; ok {
 			return
 		}
-		seen[value] = struct{}{}
-		categories = append(categories, value)
+		seen[name] = sabCategoryConfig{Name: name, Dir: dir}
 	}
 
-	add("*")
-	add(s.cfg.Compatibility.DefaultCategory)
+	for _, category := range s.defaultSABCategories() {
+		add(category.Name, category.Dir)
+	}
+
+	entries, err := os.ReadDir(s.cfg.Data.Completed)
+	if err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			name := strings.TrimSpace(entry.Name())
+			if name == "" {
+				continue
+			}
+			add(name, name)
+		}
+	}
+
 	for _, job := range jobs {
-		add(job.Category)
+		add(job.Category, job.Category)
 	}
-	sort.Strings(categories)
+
+	categories := make([]sabCategoryConfig, 0, len(seen))
+	defaultCategory, ok := seen["*"]
+	if ok {
+		categories = append(categories, defaultCategory)
+		delete(seen, "*")
+	}
+
+	names := make([]string, 0, len(seen))
+	for name := range seen {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		categories = append(categories, seen[name])
+	}
 	return categories
+}
+
+func (s *Server) defaultSABCategories() []sabCategoryConfig {
+	defaultCategory := strings.TrimSpace(s.cfg.Compatibility.DefaultCategory)
+	categories := []sabCategoryConfig{
+		{Name: "*"},
+		{Name: "movies", Dir: "movies"},
+		{Name: "tv", Dir: "tv"},
+		{Name: "audio", Dir: "audio"},
+		{Name: "software", Dir: "software"},
+	}
+	if defaultCategory == "" || defaultCategory == "*" {
+		return categories
+	}
+	return append(categories, sabCategoryConfig{Name: defaultCategory, Dir: defaultCategory})
 }

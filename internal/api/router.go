@@ -72,6 +72,8 @@ func (s *Server) Router() http.Handler {
 
 	mux.HandleFunc("/api", s.handleSABAPI)
 	mux.HandleFunc("/sabnzbd/api", s.handleSABAPI)
+	mux.HandleFunc("/config/categories", s.handleSABConfigCategories)
+	mux.HandleFunc("/config/categories/", s.handleSABConfigCategories)
 
 	return withLogging(s.log, mux)
 }
