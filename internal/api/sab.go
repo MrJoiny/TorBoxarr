@@ -116,11 +116,11 @@ func (s *Server) handleSABGetConfig(w http.ResponseWriter, r *http.Request) {
 				"dirscan_dir":  "",
 				"script_dir":   "",
 			},
-			"categories":   items,
-			"servers":      []any{},
-			"rss":          []any{},
-			"sorters":      []any{},
-			"scripts":      []string{"None"},
+			"categories": items,
+			"servers":    []any{},
+			"rss":        []any{},
+			"sorters":    []any{},
+			"scripts":    []string{"None"},
 
 			// Keep flat fields too in case a client expects them directly.
 			"download_dir": s.cfg.Data.Staging,

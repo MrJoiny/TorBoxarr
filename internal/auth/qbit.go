@@ -95,5 +95,3 @@ func ClearQBitCookie(w http.ResponseWriter, secure bool) {
 		MaxAge:   -1,
 	})
 }
-
-

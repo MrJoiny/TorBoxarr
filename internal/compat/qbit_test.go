@@ -221,7 +221,7 @@ func TestQBitDLSpeed(t *testing.T) {
 			done:    100 * 1024 * 1024, // 100 MB
 			total:   200 * 1024 * 1024,
 			elapsed: 10 * time.Second,
-			wantMin: 10 * 1024 * 1024 - 1024, // ~10 MB/s
+			wantMin: 10*1024*1024 - 1024, // ~10 MB/s
 			wantMax: 10*1024*1024 + 1024,
 		},
 	}

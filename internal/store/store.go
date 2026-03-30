@@ -782,7 +782,6 @@ func formatTime(v time.Time) string {
 	return v.UTC().Format(time.RFC3339Nano)
 }
 
-
 func boolToInt(v bool) int {
 	if v {
 		return 1

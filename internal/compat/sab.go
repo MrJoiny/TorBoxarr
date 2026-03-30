@@ -223,8 +223,6 @@ func percent(done, total int64) float64 {
 	return math.Round(p*100) / 100
 }
 
-
-
 func NormalizeSABNZOID(v string) string {
 	return strings.TrimPrefix(v, "TBOX-")
 }
