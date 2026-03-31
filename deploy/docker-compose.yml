@@ -6,5 +6,8 @@ services:
             - "127.0.0.1:8085:8085"
         env_file:
             - ../.env
+        environment:
+            TORBOXARR_DATABASE_PATH: /config/torboxarr.db
         volumes:
             - ../data:/data
+            - ../config:/config

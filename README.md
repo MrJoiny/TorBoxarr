@@ -59,7 +59,7 @@ Optional overrides:
 |---|---|---|
 | `TORBOXARR_SERVER_BASE_URL` | `http://localhost:8085` | Base URL the server reports to clients |
 | `TORBOXARR_DATA_ROOT` | `/data` | Root directory for staging, completed files, and payloads |
-| `TORBOXARR_DATABASE_PATH` | `/var/lib/torboxarr/torboxarr.db` | SQLite database path; defaults to a dedicated app-data directory |
+| `TORBOXARR_DATABASE_PATH` | `/var/lib/torboxarr/torboxarr.db` | SQLite database path; Docker compose overrides this to `/config/torboxarr.db` on a bind mount |
 | `TORBOXARR_LOG_LEVEL` | `INFO` | Log verbosity: DEBUG, INFO, WARN, or ERROR |
 
 ### Connecting Sonarr/Radarr
@@ -84,7 +84,14 @@ For usenet, add a SABnzbd download client:
 docker compose -f deploy/docker-compose.yml up -d
 ```
 
-The compose file bind-mounts `../data` into `/data` for downloads and payloads, stores the SQLite database in a dedicated internal app-data directory at `/var/lib/torboxarr/torboxarr.db`, and reads `../.env` for configuration. The container uses a distroless base image.
+The compose file bind-mounts `../data` into `/data` for downloads and payloads, bind-mounts `../config` into `/config`, stores the SQLite database at `/config/torboxarr.db`, and reads `../.env` for configuration. The container uses a distroless base image.
+
+If you want to run the container as a specific UID/GID with Docker's `user:` setting, make sure both host directories are writable by that user:
+
+- `../config` for the SQLite database plus its `-wal` and `-shm` files
+- `../data` for staging, completed downloads, and payloads
+
+If you switch from a previous root-run container to a non-root user, you may need to `chown` or remove the existing database files in `../config` before restarting.
 
 ### From source
 
