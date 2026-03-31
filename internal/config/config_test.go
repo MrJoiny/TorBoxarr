@@ -40,7 +40,7 @@ func TestApplyEnvUsesMinimalSurface(t *testing.T) {
 	if cfg.Data.Root != "/srv/torboxarr" {
 		t.Fatalf("Data.Root = %q, want env value", cfg.Data.Root)
 	}
-	if cfg.Database.Path != "/var/lib/torboxarr/torboxarr.db" {
+	if cfg.Database.Path != "/config/torboxarr.db" {
 		t.Fatalf("Database.Path = %q, want fixed default path", cfg.Database.Path)
 	}
 	if cfg.Auth.QBitUsername != defaultQBitUser {

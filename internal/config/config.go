@@ -13,7 +13,7 @@ import (
 
 const (
 	defaultDataRoot     = "/data"
-	defaultDatabasePath = "/var/lib/torboxarr/torboxarr.db"
+	defaultDatabasePath = "/config/torboxarr.db"
 	defaultQBitUser     = "admin"
 	defaultServerAddr   = ":8085"
 )

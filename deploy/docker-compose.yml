@@ -7,7 +7,12 @@ services:
         env_file:
             - ../.env
         environment:
+            PUID: ${PUID:?set PUID in ../.env or the shell environment}
+            PGID: ${PGID:?set PGID in ../.env or the shell environment}
             TORBOXARR_DATABASE_PATH: /config/torboxarr.db
         volumes:
             - ../data:/data
-            - ../config:/config
+            - torboxarr_config:/config
+
+volumes:
+    torboxarr_config:

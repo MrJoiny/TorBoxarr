@@ -59,8 +59,15 @@ Optional overrides:
 |---|---|---|
 | `TORBOXARR_SERVER_BASE_URL` | `http://localhost:8085` | Base URL the server reports to clients |
 | `TORBOXARR_DATA_ROOT` | `/data` | Root directory for staging, completed files, and payloads |
-| `TORBOXARR_DATABASE_PATH` | `/var/lib/torboxarr/torboxarr.db` | SQLite database path; Docker compose overrides this to `/config/torboxarr.db` on a bind mount |
+| `TORBOXARR_DATABASE_PATH` | `/config/torboxarr.db` | SQLite database path; the container stores state under `/config` |
 | `TORBOXARR_LOG_LEVEL` | `INFO` | Log verbosity: DEBUG, INFO, WARN, or ERROR |
+
+Docker-specific runtime variables used by the bundled compose file:
+
+| Variable | Default | What it does |
+|---|---|---|
+| `PUID` | none | UID the container drops to before starting TorBoxarr; required for the bundled Docker setup |
+| `PGID` | none | GID the container drops to before starting TorBoxarr; required for the bundled Docker setup |
 
 ### Connecting Sonarr/Radarr
 
@@ -84,14 +91,13 @@ For usenet, add a SABnzbd download client:
 docker compose -f deploy/docker-compose.yml up -d
 ```
 
-The compose file bind-mounts `../data` into `/data` for downloads and payloads, bind-mounts `../config` into `/config`, stores the SQLite database at `/config/torboxarr.db`, and reads `../.env` for configuration. The container uses a distroless base image.
+The compose file bind-mounts `../data` into `/data` for downloads and payloads, creates a named Docker volume for `/config`, stores the SQLite database at `/config/torboxarr.db`, and reads `../.env` for configuration.
 
-If you want to run the container as a specific UID/GID with Docker's `user:` setting, make sure both host directories are writable by that user:
+On startup the container runs as root briefly, recursively assigns `/config` to `PUID:PGID`, then drops privileges and starts TorBoxarr as that user. This makes named-volume `/config` setups work without manual `chown`.
 
-- `../config` for the SQLite database plus its `-wal` and `-shm` files
-- `../data` for staging, completed downloads, and payloads
+The automatic ownership repair only applies to `/config`. `../data` is left untouched, so you should still make sure your downloads/media path is writable by the same UID/GID if you expect shared write access with Sonarr, Radarr, or other tools.
 
-If you switch from a previous root-run container to a non-root user, you may need to `chown` or remove the existing database files in `../config` before restarting.
+If you choose Docker's `user:` setting instead, the container starts directly as that user and skips the built-in ownership repair. In that mode `/config` must already be writable or the container will exit early with a clear startup error.
 
 ### From source
 
@@ -100,12 +106,12 @@ go build -o bin/torboxarr ./cmd/torboxarr
 ./bin/torboxarr
 ```
 
-Direct binary runs default to `/var/lib/torboxarr/torboxarr.db`, which is Docker-first. If you want a different path for local development, set `TORBOXARR_DATABASE_PATH`.
+Direct binary runs default to `/config/torboxarr.db`. If you want a different path for local development, set `TORBOXARR_DATABASE_PATH`.
 
 The binary runs database migrations automatically on startup, so you don't need to run goose separately unless you want to manage migrations by hand:
 
 ```bash
-goose -dir internal/store/migrations sqlite3 /var/lib/torboxarr/torboxarr.db up
+goose -dir internal/store/migrations sqlite3 /config/torboxarr.db up
 ```
 
 ## Development
@@ -149,6 +155,6 @@ internal/
   torbox/            TorBox API client with rate limiting
   worker/            Background worker loops (submit, poll, download, finalize, remove, prune)
 deploy/
-  Dockerfile         Multi-stage build, distroless runtime
-  docker-compose.yml Minimal compose setup, bind-mounting ../data
+  Dockerfile         Multi-stage build plus runtime entrypoint for PUID/PGID startup
+  docker-compose.yml Compose setup with bind-mounted ../data and named-volume /config
 ```

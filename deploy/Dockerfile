@@ -6,8 +6,11 @@ COPY cmd ./cmd
 COPY internal ./internal
 RUN --mount=type=cache,target=/go/pkg/mod     --mount=type=cache,target=/root/.cache/go-build     CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /out/torboxarr ./cmd/torboxarr
 
-FROM gcr.io/distroless/static-debian12
+FROM alpine:3.23.3
+RUN apk add --no-cache ca-certificates su-exec
 WORKDIR /app
 COPY --from=build /out/torboxarr /app/torboxarr
+COPY deploy/entrypoint.sh /entrypoint.sh
+RUN chmod 0755 /entrypoint.sh
 EXPOSE 8085
-ENTRYPOINT ["/app/torboxarr"]
+ENTRYPOINT ["/entrypoint.sh"]
