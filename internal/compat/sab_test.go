@@ -45,6 +45,23 @@ func TestProjectSABQueueSlot(t *testing.T) {
 	}
 }
 
+func TestProjectSABQueueSlot_LocalDownloadingWithoutKnownSizeStaysQueued(t *testing.T) {
+	job := &store.Job{
+		PublicID:    "pub-sab-unknown",
+		DisplayName: "Unknown Size NZB",
+		Category:    "tv",
+		State:       store.StateLocalDownloading,
+		CreatedAt:   time.Now().UTC(),
+		UpdatedAt:   time.Now().UTC(),
+	}
+
+	slot := compat.ProjectSABQueueSlot(job)
+
+	if slot.Status != "Queued" {
+		t.Errorf("Status = %q, want %q", slot.Status, "Queued")
+	}
+}
+
 func TestProjectSABQueueSlot_IgnoresRemoteProgress(t *testing.T) {
 	job := &store.Job{
 		PublicID:    "pub-sab-remote",
@@ -59,6 +76,9 @@ func TestProjectSABQueueSlot_IgnoresRemoteProgress(t *testing.T) {
 
 	slot := compat.ProjectSABQueueSlot(job)
 
+	if slot.Status != "Queued" {
+		t.Errorf("Status = %q, want %q", slot.Status, "Queued")
+	}
 	if slot.MB != "0.00" {
 		t.Errorf("MB = %q, want %q", slot.MB, "0.00")
 	}
@@ -223,7 +243,7 @@ func TestProjectSABQueue_Status(t *testing.T) {
 	// When at least one slot is Downloading, queue status should be "Downloading"
 	jobs := []*store.Job{
 		{State: store.StateRemoteQueued, PublicID: "p1", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()},
-		{State: store.StateLocalDownloading, PublicID: "p2", CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()},
+		{State: store.StateLocalDownloading, PublicID: "p2", BytesTotal: 1000, BytesDone: 100, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC()},
 	}
 	result := compat.ProjectSABQueue("1.0", jobs)
 	if result.Queue.Status != "Downloading" {

@@ -110,6 +110,8 @@ func (o *Orchestrator) processDownloadJob(ctx context.Context, job *store.Job) e
 		}
 	}
 
+	visibleLocalDownload := job.State == store.StateLocalDownloading && job.BytesTotal > 0
+
 	for _, part := range parts {
 		if part.Completed {
 			o.log.Debug("skipping completed transfer part", "job_id", job.ID, "part_key", part.PartKey, "path", part.TempPath)
@@ -130,6 +132,20 @@ func (o *Orchestrator) processDownloadJob(ctx context.Context, job *store.Job) e
 			}
 			now := time.Now().UTC()
 			part.UpdatedAt = now
+			if !visibleLocalDownload && total > 0 {
+				job.BytesTotal = total
+				if done > job.BytesDone {
+					job.BytesDone = done
+				}
+				job.ErrorMessage = nil
+				job.UpdatedAt = now
+				nextRun := now.Add(o.cfg.Workers.DownloadInterval)
+				job.NextRunAt = &nextRun
+				if err := o.store.UpdateJobState(ctx, job, store.StateLocalDownloading, "local download started"); err != nil {
+					return err
+				}
+				visibleLocalDownload = true
+			}
 			if now.Sub(lastProgressLog) >= 15*time.Second {
 				lastProgressLog = now
 				pct := 0.0

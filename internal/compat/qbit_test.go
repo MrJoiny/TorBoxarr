@@ -10,7 +10,8 @@ import (
 )
 
 //go:fix inline
-func strPtr(s string) *string { return new(s) }
+func strPtr(s string) *string        { return new(s) }
+func timePtr(t time.Time) *time.Time { return &t }
 
 func baseJob() *store.Job {
 	now := time.Now().UTC()
@@ -78,9 +79,9 @@ func TestProjectQBitState_AllStates(t *testing.T) {
 		{store.StateSubmitPending, "queuedDL"},
 		{store.StateSubmitRetry, "queuedDL"},
 		{store.StateRemoteQueued, "queuedDL"},
-		{store.StateRemoteActive, "downloading"},
+		{store.StateRemoteActive, "queuedDL"},
 		{store.StateLocalDownloadPending, "queuedDL"},
-		{store.StateLocalDownloading, "downloading"},
+		{store.StateLocalDownloading, "queuedDL"},
 		{store.StateLocalVerify, "checkingResumeData"},
 		{store.StateCompleted, "pausedUP"},
 		{store.StateRemovePending, "pausedUP"},
@@ -92,6 +93,10 @@ func TestProjectQBitState_AllStates(t *testing.T) {
 		t.Run(string(tt.state), func(t *testing.T) {
 			job := baseJob()
 			job.State = tt.state
+			if tt.state == store.StateLocalDownloading {
+				job.BytesTotal = 0
+				job.BytesDone = 0
+			}
 			info := compat.ProjectQBitTorrent(job)
 			if info.State != tt.want {
 				t.Errorf("state = %q, want %q", info.State, tt.want)
@@ -161,12 +166,36 @@ func TestProjectQBitTorrent_UsesParentAsSavePathForStaging(t *testing.T) {
 	}
 }
 
+func TestProjectQBitTorrent_LocalDownloadingWithKnownSizeUsesDownloadingState(t *testing.T) {
+	job := baseJob()
+	job.State = store.StateLocalDownloading
+	job.BytesTotal = 1000
+	job.BytesDone = 250
+
+	info := compat.ProjectQBitTorrent(job)
+
+	if info.State != "downloading" {
+		t.Errorf("State = %q, want %q", info.State, "downloading")
+	}
+}
+
 func TestProjectQBitTransferInfo(t *testing.T) {
+	now := time.Now().UTC()
 	jobs := []*store.Job{
-		{State: store.StateLocalDownloading, BytesDone: 100},
+		{
+			State:                  store.StateLocalDownloading,
+			BytesDone:              100,
+			LocalDownloadStartedAt: timePtr(now.Add(-10 * time.Second)),
+			UpdatedAt:              now,
+		},
 		{State: store.StateRemoteActive, BytesDone: 999},
 		{State: store.StateCompleted, BytesDone: 500},
-		{State: store.StateLocalDownloading, BytesDone: 200},
+		{
+			State:                  store.StateLocalDownloading,
+			BytesDone:              200,
+			LocalDownloadStartedAt: timePtr(now.Add(-20 * time.Second)),
+			UpdatedAt:              now,
+		},
 	}
 	info := compat.ProjectQBitTransferInfo(jobs)
 
@@ -176,8 +205,8 @@ func TestProjectQBitTransferInfo(t *testing.T) {
 	if info.DLInfoData != 800 {
 		t.Errorf("DLInfoData = %d, want 800", info.DLInfoData)
 	}
-	if info.DLInfoSpeed != 2 {
-		t.Errorf("DLInfoSpeed = %d, want 2 (two downloading jobs)", info.DLInfoSpeed)
+	if info.DLInfoSpeed < 19 || info.DLInfoSpeed > 21 {
+		t.Errorf("DLInfoSpeed = %d, want about 20 bytes/sec", info.DLInfoSpeed)
 	}
 }
 
@@ -191,6 +220,9 @@ func TestProjectQBitTorrent_IgnoresRemoteProgressBytes(t *testing.T) {
 
 	if info.Progress != 0 {
 		t.Errorf("Progress = %f, want 0", info.Progress)
+	}
+	if info.State != "queuedDL" {
+		t.Errorf("State = %q, want %q", info.State, "queuedDL")
 	}
 	if info.Downloaded != 0 {
 		t.Errorf("Downloaded = %d, want 0", info.Downloaded)

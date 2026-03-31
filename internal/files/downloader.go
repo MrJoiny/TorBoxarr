@@ -100,14 +100,14 @@ func (d *RangeDownloader) Download(ctx context.Context, part *store.TransferPart
 	}
 	d.debug("download target size resolved", "part_key", part.PartKey, "total", total)
 
+	if err := progress(existingSize, total); err != nil {
+		return err
+	}
+
 	buf := make([]byte, d.writeBufSize)
 	writtenSinceNotify := int64(0)
 	current := existingSize
-	if current > 0 {
-		if err := progress(current, total); err != nil {
-			return err
-		}
-	}
+	sentFirstWriteProgress := existingSize > 0
 
 	for {
 		n, readErr := resp.Body.Read(buf)
@@ -118,10 +118,11 @@ func (d *RangeDownloader) Download(ctx context.Context, part *store.TransferPart
 			current += int64(n)
 			writtenSinceNotify += int64(n)
 			part.BytesDone = current
-			if writtenSinceNotify >= d.notifyEvery {
+			if !sentFirstWriteProgress || writtenSinceNotify >= d.notifyEvery {
 				if err := progress(current, total); err != nil {
 					return err
 				}
+				sentFirstWriteProgress = true
 				writtenSinceNotify = 0
 			}
 		}

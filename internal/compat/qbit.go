@@ -70,9 +70,7 @@ func ProjectQBitTransferInfo(jobs []*store.Job) QBitTransferInfo {
 	for _, job := range jobs {
 		done, _ := projectLocalTransferBytes(job)
 		dlInfoData += done
-		if job.State == store.StateLocalDownloading {
-			dlInfoSpeed += 1
-		}
+		dlInfoSpeed += qbitDLSpeed(job)
 	}
 	return QBitTransferInfo{
 		ConnectionStatus: "connected",
@@ -188,16 +186,20 @@ func projectLocalTransferBytes(job *store.Job) (done, total int64) {
 }
 
 func projectQBitState(job *store.Job) string {
+	_, total := projectLocalTransferBytes(job)
 	switch job.State {
 	case store.StateAccepted, store.StateSubmitPending, store.StateSubmitRetry:
 		return "queuedDL"
 	case store.StateRemoteQueued:
 		return "queuedDL"
 	case store.StateRemoteActive:
-		return "downloading"
+		return "queuedDL"
 	case store.StateLocalDownloadPending:
 		return "queuedDL"
 	case store.StateLocalDownloading:
+		if total <= 0 {
+			return "queuedDL"
+		}
 		return "downloading"
 	case store.StateLocalVerify:
 		return "checkingResumeData"

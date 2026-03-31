@@ -120,7 +120,7 @@ func ProjectSABQueueSlot(job *store.Job) SABQueueSlot {
 		MB:         fmt.Sprintf("%.2f", totalMB),
 		MBLeft:     fmt.Sprintf("%.2f", leftMB),
 		Percentage: percent(done, total),
-		Status:     projectSABQueueStatus(job.State),
+		Status:     projectSABQueueStatus(job, total),
 		TimeLeft:   projectSABTimeLeft(job),
 		Priority:   "Normal",
 		PP:         projectSABPP(job.Metadata.PostProcessing),
@@ -173,16 +173,19 @@ func isSABHistoryState(state store.JobState) bool {
 	}
 }
 
-func projectSABQueueStatus(state store.JobState) string {
-	switch state {
+func projectSABQueueStatus(job *store.Job, total int64) string {
+	switch job.State {
 	case store.StateRemoteQueued:
 		return "Queued"
 	case store.StateLocalDownloading:
+		if total <= 0 {
+			return "Queued"
+		}
 		return "Downloading"
 	case store.StateLocalVerify:
 		return "Moving"
 	case store.StateRemoteActive:
-		return "Downloading"
+		return "Queued"
 	default:
 		return "Queued"
 	}

@@ -35,8 +35,13 @@ func TestDownload_FullFile(t *testing.T) {
 	}
 
 	var progressCalls int
+	var firstDone, firstTotal int64
 	err := dl.Download(context.Background(), part, func(done, total int64) error {
 		progressCalls++
+		if progressCalls == 1 {
+			firstDone = done
+			firstTotal = total
+		}
 		return nil
 	})
 	if err != nil {
@@ -52,6 +57,12 @@ func TestDownload_FullFile(t *testing.T) {
 	}
 	if progressCalls == 0 {
 		t.Error("expected at least one progress callback")
+	}
+	if firstDone != 0 {
+		t.Errorf("first progress done = %d, want 0", firstDone)
+	}
+	if firstTotal != int64(len(content)) {
+		t.Errorf("first progress total = %d, want %d", firstTotal, len(content))
 	}
 	if part.BytesDone != int64(len(content)) {
 		t.Errorf("BytesDone = %d, want %d", part.BytesDone, len(content))

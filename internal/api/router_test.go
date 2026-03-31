@@ -322,6 +322,82 @@ func TestQBitInfo(t *testing.T) {
 	}
 }
 
+func TestQBitInfo_UsesLocalTransferPartsForProgressAndEta(t *testing.T) {
+	env := newTestEnv(t)
+	sid := env.loginQBit(t)
+	now := time.Now().UTC()
+
+	job := &store.Job{
+		ID:            "qbit-local-001",
+		PublicID:      "qbit-local-public-001",
+		SourceType:    store.SourceTypeTorrent,
+		ClientKind:    store.ClientKindQBit,
+		Category:      "tv",
+		State:         store.StateLocalDownloading,
+		SubmissionKey: "qbit-local-key-001",
+		DisplayName:   "Local Downloading Torrent",
+		CreatedAt:     now.Add(-1 * time.Hour),
+		UpdatedAt:     now.Add(-1 * time.Hour),
+	}
+	if err := env.store.CreateJob(context.Background(), job); err != nil {
+		t.Fatalf("CreateJob: %v", err)
+	}
+
+	part := &store.TransferPart{
+		JobID:         job.ID,
+		PartKey:       "file-001",
+		SourceURL:     "https://example.com/file.bin",
+		TempPath:      filepath.Join(t.TempDir(), "file.bin"),
+		RelativePath:  "file.bin",
+		ContentLength: 1000,
+		BytesDone:     500,
+		CreatedAt:     now.Add(-10 * time.Second),
+		UpdatedAt:     now,
+	}
+	if err := env.store.UpsertTransferPart(context.Background(), part); err != nil {
+		t.Fatalf("UpsertTransferPart: %v", err)
+	}
+
+	rec := env.qbitRequest(t, "GET", "/api/v2/torrents/info", nil, "", sid)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	var resp []struct {
+		State      string  `json:"state"`
+		Progress   float64 `json:"progress"`
+		Eta        int64   `json:"eta"`
+		Downloaded int64   `json:"downloaded"`
+		Size       int64   `json:"size"`
+		AmountLeft int64   `json:"amount_left"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(resp) != 1 {
+		t.Fatalf("got %d torrents, want 1", len(resp))
+	}
+	torrent := resp[0]
+	if torrent.State != "downloading" {
+		t.Errorf("State = %q, want %q", torrent.State, "downloading")
+	}
+	if torrent.Progress < 0.49 || torrent.Progress > 0.51 {
+		t.Errorf("Progress = %f, want about 0.5", torrent.Progress)
+	}
+	if torrent.Eta != 10 {
+		t.Errorf("Eta = %d, want %d", torrent.Eta, 10)
+	}
+	if torrent.Downloaded != 500 {
+		t.Errorf("Downloaded = %d, want %d", torrent.Downloaded, 500)
+	}
+	if torrent.Size != 1000 {
+		t.Errorf("Size = %d, want %d", torrent.Size, 1000)
+	}
+	if torrent.AmountLeft != 500 {
+		t.Errorf("AmountLeft = %d, want %d", torrent.AmountLeft, 500)
+	}
+}
+
 // ─── QBit Delete ────────────────────────────────────────────────────────────
 
 func TestQBitCreateCategory_VisibleInCategories(t *testing.T) {
