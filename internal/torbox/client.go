@@ -30,7 +30,7 @@ type CreateUsenetTaskRequest struct {
 	PayloadPath     string
 	Name            string
 	Password        string
-	PostProcessing  int
+	PostProcessing  *int
 	AsQueued        bool
 	AddOnlyIfCached bool
 }

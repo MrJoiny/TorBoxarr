@@ -233,6 +233,52 @@ func TestProcessSubmitJob_Torrent(t *testing.T) {
 	}
 }
 
+func TestProcessSubmitJob_UsenetExplicitZeroPostProcessing(t *testing.T) {
+	env := newWorkerEnv(t)
+	ctx := context.Background()
+
+	var gotPostProcessing *int
+	env.mock.CreateUsenetTaskFn = func(ctx context.Context, req torbox.CreateUsenetTaskRequest) (*torbox.CreateTaskResponse, error) {
+		if req.PostProcessing == nil {
+			t.Fatal("expected PostProcessing to be set")
+		}
+		value := *req.PostProcessing
+		gotPostProcessing = &value
+		return &torbox.CreateTaskResponse{
+			RemoteID:    "usenet-123",
+			DisplayName: "Remote NZB",
+		}, nil
+	}
+
+	job := makeWorkerJob("sub-nzb-001", "pub-sub-nzb-001", store.StateSubmitPending, store.SourceTypeNZB)
+	job.SourceURI = strPtr("https://example.invalid/test.nzb")
+	job.Metadata.PostProcessing = 0
+	past := time.Now().UTC().Add(-1 * time.Minute)
+	job.NextRunAt = &past
+	if err := env.store.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+
+	orch := env.newOrchestrator(t)
+	startCtx, cancel := context.WithCancel(ctx)
+	if err := orch.Start(startCtx); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "job sub-nzb-001 reaches StateRemoteActive", 5*time.Second, func() bool {
+		got, _ := env.store.GetJobByID(ctx, "sub-nzb-001")
+		return got != nil && got.State == store.StateRemoteActive
+	})
+	cancel()
+	orch.Wait()
+
+	if gotPostProcessing == nil {
+		t.Fatal("expected Usenet submit request to include post_processing")
+	}
+	if *gotPostProcessing != 0 {
+		t.Fatalf("PostProcessing = %d, want 0", *gotPostProcessing)
+	}
+}
+
 func TestProcessSubmitJob_Retry(t *testing.T) {
 	env := newWorkerEnv(t)
 	ctx := context.Background()

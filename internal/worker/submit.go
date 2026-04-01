@@ -52,12 +52,13 @@ func (o *Orchestrator) processSubmitJob(ctx context.Context, job *store.Job) err
 			AddOnlyIfCached: job.Metadata.AddOnlyIfCached,
 		})
 	case store.SourceTypeNZB:
+		postProcessing := job.Metadata.PostProcessing
 		resp, err = o.torbox.CreateUsenetTask(ctx, torbox.CreateUsenetTaskRequest{
 			Link:            deref(job.SourceURI),
 			PayloadPath:     deref(job.PayloadRef),
 			Name:            job.DisplayName,
 			Password:        job.Metadata.Password,
-			PostProcessing:  job.Metadata.PostProcessing,
+			PostProcessing:  &postProcessing,
 			AsQueued:        job.Metadata.AsQueued,
 			AddOnlyIfCached: job.Metadata.AddOnlyIfCached,
 		})

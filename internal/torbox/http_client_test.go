@@ -30,6 +30,8 @@ func jsonEnvelope(data any) []byte {
 	return out
 }
 
+func intPtr(v int) *int { return &v }
+
 func TestCreateTorrentTask_Success(t *testing.T) {
 	client, _ := newTestHTTPClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -115,6 +117,57 @@ func TestCreateTorrentTask_UsesDocumentedFileField(t *testing.T) {
 	}
 	if gotTorrentFileField {
 		t.Fatal("did not expect multipart file field 'torrent_file'")
+	}
+}
+
+func TestCreateUsenetTask_ExplicitZeroPostProcessingSent(t *testing.T) {
+	var gotValues []string
+	var gotField bool
+	client, _ := newTestHTTPClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatalf("parse form: %v", err)
+		}
+		gotValues, gotField = r.MultipartForm.Value["post_processing"]
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(jsonEnvelope(42))
+	})
+
+	_, err := client.CreateUsenetTask(t.Context(), torbox.CreateUsenetTaskRequest{
+		Link:           "https://example.invalid/test.nzb",
+		Name:           "Test NZB",
+		PostProcessing: intPtr(0),
+	})
+	if err != nil {
+		t.Fatalf("CreateUsenetTask: %v", err)
+	}
+	if !gotField {
+		t.Fatal("expected multipart field 'post_processing'")
+	}
+	if len(gotValues) != 1 || gotValues[0] != "0" {
+		t.Fatalf("post_processing = %v, want [0]", gotValues)
+	}
+}
+
+func TestCreateUsenetTask_OmitsPostProcessingWhenUnset(t *testing.T) {
+	var gotField bool
+	client, _ := newTestHTTPClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatalf("parse form: %v", err)
+		}
+		_, gotField = r.MultipartForm.Value["post_processing"]
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(jsonEnvelope(42))
+	})
+
+	_, err := client.CreateUsenetTask(t.Context(), torbox.CreateUsenetTaskRequest{
+		Link: "https://example.invalid/test.nzb",
+		Name: "Test NZB",
+	})
+	if err != nil {
+		t.Fatalf("CreateUsenetTask: %v", err)
+	}
+	if gotField {
+		t.Fatal("did not expect multipart field 'post_processing'")
 	}
 }
 

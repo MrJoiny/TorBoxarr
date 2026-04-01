@@ -66,7 +66,11 @@ func (c *HTTPClient) CreateTorrentTask(ctx context.Context, req CreateTorrentTas
 }
 
 func (c *HTTPClient) CreateUsenetTask(ctx context.Context, req CreateUsenetTaskRequest) (*CreateTaskResponse, error) {
-	c.debug("creating usenet task", "has_link", req.Link != "", "has_payload", req.PayloadPath != "", "name", req.Name, "post_processing", req.PostProcessing)
+	postProcessingValue := any(nil)
+	if req.PostProcessing != nil {
+		postProcessingValue = *req.PostProcessing
+	}
+	c.debug("creating usenet task", "has_link", req.Link != "", "has_payload", req.PayloadPath != "", "name", req.Name, "has_post_processing", req.PostProcessing != nil, "post_processing", postProcessingValue)
 	if err := c.wait(ctx, c.createLimiter); err != nil {
 		return nil, err
 	}
@@ -88,8 +92,8 @@ func (c *HTTPClient) CreateUsenetTask(ctx context.Context, req CreateUsenetTaskR
 	if req.Password != "" {
 		fields["password"] = req.Password
 	}
-	if req.PostProcessing != 0 {
-		fields["post_processing"] = strconv.Itoa(req.PostProcessing)
+	if req.PostProcessing != nil {
+		fields["post_processing"] = strconv.Itoa(*req.PostProcessing)
 	}
 	if req.AsQueued {
 		fields["as_queued"] = "true"
