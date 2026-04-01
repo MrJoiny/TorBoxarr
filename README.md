@@ -4,6 +4,13 @@ Pretends to be qBittorrent or SABnzbd so your *arr apps can use [TorBox](https:/
 
 When Sonarr or Radarr sends a torrent or NZB, TorBoxarr accepts it through the standard qBittorrent/SABnzbd API, submits it to TorBox, polls until the remote download finishes, pulls the files down locally, and places them where the *arr app expects to find them.
 
+## Support
+
+If TorBoxarr has been useful to you and you want to support the project, you can use my TorBox referral when you subscribe:
+
+- Referral code: `605c7a7b-6913-4ec3-868c-061aa6694f43`
+- Referral link: [torbox.app/subscription?referral=605c7a7b-6913-4ec3-868c-061aa6694f43](https://torbox.app/subscription?referral=605c7a7b-6913-4ec3-868c-061aa6694f43)
+
 ## How it works
 
 TorBoxarr runs a single Go binary with an HTTP server and a set of background workers. The server handles two API surfaces:
@@ -24,7 +31,7 @@ Each stage has its own worker loop:
 2. **Poller** checks TorBox for download progress. Handles the queued-to-active transition, including recovery if the queue ID disappears before an active ID appears.
 3. **Downloader** fetches completed files from TorBox to local staging. Supports resumable HTTP range downloads and checkpoints progress to SQLite periodically.
 4. **Finalizer** verifies all parts are on disk, then moves the staging directory to the completed path.
-5. **Remover** cleans up local files and deletes the remote task on TorBox when the *arr app sends a delete request.
+5. **Remover** cleans up local files when the *arr app sends a delete request.
 6. **Pruner** periodically deletes old removed job records and expired qBit session tokens.
 
 State is stored in a local SQLite database. The schema is managed with [goose](https://github.com/pressly/goose) migrations embedded in the binary.
@@ -61,15 +68,18 @@ Optional overrides:
 | `TORBOXARR_DATA_ROOT` | `/data` | Root directory for staging, completed files, and payloads |
 | `TORBOXARR_DATABASE_PATH` | `/config/torboxarr.db` | SQLite database path; the container stores state under `/config` |
 | `TORBOXARR_LOG_LEVEL` | `INFO` | Log verbosity: DEBUG, INFO, WARN, or ERROR |
+| `TORBOXARR_SAB_NZB_KEY` | falls back to `TORBOXARR_SAB_API_KEY` | Explicit key for the SABnzbd-compatible endpoint; omit it to reuse the SAB API key |
 
-Docker-specific runtime variables used by the bundled compose file:
+Docker-specific runtime variables used by the bundled compose file. Set these to the same UID/GID that Sonarr and Radarr use on the host, so TorBoxarr can write to the same download and category folders:
 
 | Variable | Default | What it does |
 |---|---|---|
 | `PUID` | none | UID the container drops to before starting TorBoxarr; required for the bundled Docker setup |
 | `PGID` | none | GID the container drops to before starting TorBoxarr; required for the bundled Docker setup |
 
-### Connecting Sonarr/Radarr
+### Connecting Sonarr/Radarr / Download Clients
+
+Set up the *arr download clients after TorBoxarr is running:
 
 For torrent downloads, add a qBittorrent download client in Sonarr/Radarr:
 
@@ -78,10 +88,16 @@ For torrent downloads, add a qBittorrent download client in Sonarr/Radarr:
 - Username: `admin`
 - Password: whatever you set in `TORBOXARR_QBIT_PASSWORD`
 
+qBittorrent categories map to subfolders under `TORBOXARR_DATA_ROOT/completed`. If you want a new category for Sonarr or Radarr, create it in qBittorrent first or create the folder manually under the completed root before using it in SAB.
+
 For usenet, add a SABnzbd download client:
 
 - Host/port: same as above
 - API key: whatever you set in `TORBOXARR_SAB_API_KEY`
+
+The normal Sonarr/Radarr SABnzbd client flow will only use categories that already exist. If you need a new category, create the folder first under `TORBOXARR_DATA_ROOT/completed/<category>` or create the category through qBittorrent so TorBoxarr can discover it.
+
+If you use a SAB category that points to a folder, make sure TorBoxarr runs with the same UID/GID as Sonarr and Radarr. Otherwise the container may not be able to create or move files into that folder.
 
 ## Running
 
@@ -91,7 +107,7 @@ For usenet, add a SABnzbd download client:
 docker compose -f deploy/docker-compose.yml up -d
 ```
 
-The compose file bind-mounts `../data` into `/data` for downloads and payloads, creates a named Docker volume for `/config`, stores the SQLite database at `/config/torboxarr.db`, and reads `../.env` for configuration.
+The compose file publishes `8085:8085` on the host, bind-mounts `../data` into `/data` for downloads and payloads, creates a named Docker volume for `/config`, stores the SQLite database at `/config/torboxarr.db`, and reads `../.env` for configuration.
 
 On startup the container runs as root briefly, recursively assigns `/config` to `PUID:PGID`, then drops privileges and starts TorBoxarr as that user. This makes named-volume `/config` setups work without manual `chown`.
 

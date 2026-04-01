@@ -3,13 +3,9 @@ services:
         image: mrjoiny/torboxarr:latest
         restart: unless-stopped
         ports:
-            - "127.0.0.1:8085:8085"
+            - "8085:8085"
         env_file:
             - ../.env
-        environment:
-            PUID: ${PUID:?set PUID in ../.env or the shell environment}
-            PGID: ${PGID:?set PGID in ../.env or the shell environment}
-            TORBOXARR_DATABASE_PATH: /config/torboxarr.db
         volumes:
             - ../data:/data
             - torboxarr_config:/config
