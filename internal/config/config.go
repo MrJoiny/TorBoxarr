@@ -107,7 +107,7 @@ func defaultConfig() Config {
 	cfg.TorBox.CreatePerHour = 60
 	cfg.TorBox.PollPerMinute = 300
 	cfg.TorBox.DownloadLinkPerMinute = 300
-	cfg.TorBox.UserAgent = "torboxarr/0.1"
+	cfg.TorBox.UserAgent = "torboxarr/1.0"
 	cfg.Auth.QBitUsername = defaultQBitUser
 	cfg.Auth.SessionTTL = 24 * time.Hour
 	cfg.Compatibility.QBitVersion = "5.0.0"
