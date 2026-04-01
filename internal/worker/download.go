@@ -12,6 +12,18 @@ import (
 
 const progressCheckpointInterval = 15 * time.Second
 
+func progressRateMBs(lastLogAt time.Time, lastLogDone, done int64, now time.Time) float64 {
+	if lastLogAt.IsZero() {
+		return 0
+	}
+	elapsed := now.Sub(lastLogAt).Seconds()
+	deltaDone := done - lastLogDone
+	if elapsed <= 0 || deltaDone <= 0 {
+		return 0
+	}
+	return float64(deltaDone) / (1024 * 1024) / elapsed
+}
+
 func (o *Orchestrator) runDownloader(ctx context.Context) error {
 	jobs, err := o.store.ClaimJobsDue(ctx, "downloader", []store.JobState{store.StateLocalDownloadPending, store.StateLocalDownloading}, time.Now().UTC(), o.cfg.Workers.BatchSize)
 	if err != nil {
@@ -122,8 +134,8 @@ func (o *Orchestrator) processDownloadJob(ctx context.Context, job *store.Job) e
 		if part.CreatedAt.IsZero() {
 			part.CreatedAt = now
 		}
-		dlStart := time.Now()
-		lastProgressLog := time.Time{}
+		lastProgressLogAt := time.Time{}
+		lastProgressLogDone := int64(0)
 		lastProgressPersist := time.Time{}
 		downloadErr := o.downloader.Download(ctx, part, func(done, total int64) error {
 			part.BytesDone = done
@@ -146,19 +158,14 @@ func (o *Orchestrator) processDownloadJob(ctx context.Context, job *store.Job) e
 				}
 				visibleLocalDownload = true
 			}
-			if now.Sub(lastProgressLog) >= 15*time.Second {
-				lastProgressLog = now
+			if now.Sub(lastProgressLogAt) >= 15*time.Second {
 				pct := 0.0
 				if total > 0 {
 					pct = float64(done) / float64(total) * 100
 				}
 				gbDone := float64(done) / (1024 * 1024 * 1024)
 				gbTotal := float64(total) / (1024 * 1024 * 1024)
-				elapsed := now.Sub(dlStart).Seconds()
-				rateMBs := 0.0
-				if elapsed > 0 {
-					rateMBs = float64(done) / (1024 * 1024) / elapsed
-				}
+				rateMBs := progressRateMBs(lastProgressLogAt, lastProgressLogDone, done, now)
 				o.log.Info("transfer progress",
 					"job_id", job.ID,
 					"part_key", part.PartKey,
@@ -167,6 +174,8 @@ func (o *Orchestrator) processDownloadJob(ctx context.Context, job *store.Job) e
 					"total_gb", fmt.Sprintf("%.2f", gbTotal),
 					"rate_mbs", fmt.Sprintf("%.2f", rateMBs),
 				)
+				lastProgressLogAt = now
+				lastProgressLogDone = done
 			}
 			if shouldCheckpointProgress(lastProgressPersist, now, done, total) {
 				lastProgressPersist = now
