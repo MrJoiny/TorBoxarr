@@ -113,8 +113,9 @@ func parseTaskStatus(sourceType string, item map[string]any) *TaskStatus {
 		strings.Contains(state, "abort") ||
 		strings.Contains(state, "cancel") ||
 		strings.Contains(state, "cannot be completed") ||
-		strings.Contains(state, "repair failed")
-	labelFailed := strings.Contains(label, "fail")
+		strings.Contains(state, "repair failed") ||
+		strings.Contains(state, "incomplete")
+	labelFailed := strings.Contains(label, "fail") || strings.Contains(label, "incomplete")
 	// If the download content is present/ready, do not treat it as failed
 	// even if the state text contains failure markers (matches reference behaviour).
 	failed := (stateFailed || labelFailed) && !downloadReady
