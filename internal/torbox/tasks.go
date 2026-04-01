@@ -25,7 +25,6 @@ func (c *HTTPClient) CreateTorrentTask(ctx context.Context, req CreateTorrentTas
 	}
 	if req.Magnet != "" {
 		values["magnet"] = req.Magnet
-		values["magnet_link"] = req.Magnet
 	}
 	if req.Seed != 0 {
 		values["seed"] = strconv.Itoa(req.Seed)
@@ -43,7 +42,7 @@ func (c *HTTPClient) CreateTorrentTask(ctx context.Context, req CreateTorrentTas
 	var body bytes.Buffer
 	writer := multipart.NewWriter(&body)
 	if req.PayloadPath != "" {
-		if err := attachFile(writer, "torrent_file", req.PayloadPath); err != nil {
+		if err := attachFile(writer, "file", req.PayloadPath); err != nil {
 			return nil, err
 		}
 	}
@@ -190,30 +189,6 @@ func (c *HTTPClient) FindActiveTask(ctx context.Context, sourceType string, remo
 		return status, nil
 	}
 	return nil, nil
-}
-
-func (c *HTTPClient) DeleteTask(ctx context.Context, sourceType string, remoteID string) error {
-	c.debug("deleting torbox task", "source_type", sourceType, "remote_id", remoteID)
-	if err := RequireRemoteID(remoteID); err != nil {
-		return err
-	}
-	if err := c.wait(ctx, c.createLimiter); err != nil {
-		return err
-	}
-	values := url.Values{}
-	values.Set("operation", "delete")
-	switch strings.ToLower(sourceType) {
-	case "torrent":
-		values.Set("torrent_id", remoteID)
-		_, err := c.do(ctx, http.MethodPost, "/api/torrents/controltorrent", strings.NewReader(values.Encode()), "application/x-www-form-urlencoded", true)
-		return err
-	case "nzb", "usenet":
-		values.Set("usenet_id", remoteID)
-		_, err := c.do(ctx, http.MethodPost, "/api/usenet/controlusenetdownload", strings.NewReader(values.Encode()), "application/x-www-form-urlencoded", true)
-		return err
-	default:
-		return fmt.Errorf("unknown source type %q", sourceType)
-	}
 }
 
 func (c *HTTPClient) getRemoteItems(ctx context.Context, sourceType string, remoteID string) ([]map[string]any, error) {

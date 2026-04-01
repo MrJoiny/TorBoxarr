@@ -12,7 +12,6 @@ type MockClient struct {
 	GetTaskStatusFn     func(ctx context.Context, sourceType, remoteID string) (*TaskStatus, error)
 	FindActiveTaskFn    func(ctx context.Context, sourceType, remoteID, queueAuthID, remoteHash string) (*TaskStatus, error)
 	GetDownloadLinksFn  func(ctx context.Context, sourceType, remoteID string) ([]DownloadAsset, error)
-	DeleteTaskFn        func(ctx context.Context, sourceType, remoteID string) error
 }
 
 func (m *MockClient) CreateTorrentTask(ctx context.Context, req CreateTorrentTaskRequest) (*CreateTaskResponse, error) {
@@ -55,11 +54,4 @@ func (m *MockClient) GetDownloadLinks(ctx context.Context, sourceType, remoteID 
 		return m.GetDownloadLinksFn(ctx, sourceType, remoteID)
 	}
 	return nil, nil
-}
-
-func (m *MockClient) DeleteTask(ctx context.Context, sourceType, remoteID string) error {
-	if m.DeleteTaskFn != nil {
-		return m.DeleteTaskFn(ctx, sourceType, remoteID)
-	}
-	return nil
 }

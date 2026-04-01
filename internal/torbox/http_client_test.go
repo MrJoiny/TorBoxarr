@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 
@@ -54,6 +55,66 @@ func TestCreateTorrentTask_Success(t *testing.T) {
 	}
 	if resp.RemoteHash != "abc123hash" {
 		t.Errorf("RemoteHash = %q, want %q", resp.RemoteHash, "abc123hash")
+	}
+}
+
+func TestCreateTorrentTask_UsesDocumentedMagnetField(t *testing.T) {
+	var gotMagnet, gotMagnetLink string
+	client, _ := newTestHTTPClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatalf("parse form: %v", err)
+		}
+		gotMagnet = r.FormValue("magnet")
+		gotMagnetLink = r.FormValue("magnet_link")
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(jsonEnvelope(map[string]any{"torrent_id": 42}))
+	})
+
+	_, err := client.CreateTorrentTask(t.Context(), torbox.CreateTorrentTaskRequest{
+		Magnet: "magnet:?xt=urn:btih:abc123",
+		Name:   "Test Torrent",
+	})
+	if err != nil {
+		t.Fatalf("CreateTorrentTask: %v", err)
+	}
+	if gotMagnet != "magnet:?xt=urn:btih:abc123" {
+		t.Errorf("magnet = %q, want %q", gotMagnet, "magnet:?xt=urn:btih:abc123")
+	}
+	if gotMagnetLink != "" {
+		t.Errorf("magnet_link = %q, want empty", gotMagnetLink)
+	}
+}
+
+func TestCreateTorrentTask_UsesDocumentedFileField(t *testing.T) {
+	payload := t.TempDir() + "/sample.torrent"
+	if err := os.WriteFile(payload, []byte("torrent-bytes"), 0o644); err != nil {
+		t.Fatalf("write payload: %v", err)
+	}
+
+	var gotFileField bool
+	var gotTorrentFileField bool
+	client, _ := newTestHTTPClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			t.Fatalf("parse form: %v", err)
+		}
+		_, gotFileField = r.MultipartForm.File["file"]
+		_, gotTorrentFileField = r.MultipartForm.File["torrent_file"]
+		w.Header().Set("Content-Type", "application/json")
+		w.Write(jsonEnvelope(map[string]any{"torrent_id": 77}))
+	})
+
+	_, err := client.CreateTorrentTask(t.Context(), torbox.CreateTorrentTaskRequest{
+		PayloadPath: payload,
+		Name:        "Uploaded Torrent",
+	})
+	if err != nil {
+		t.Fatalf("CreateTorrentTask: %v", err)
+	}
+	if !gotFileField {
+		t.Fatal("expected multipart file field 'file'")
+	}
+	if gotTorrentFileField {
+		t.Fatal("did not expect multipart file field 'torrent_file'")
 	}
 }
 
@@ -243,32 +304,6 @@ func TestGetDownloadLinks(t *testing.T) {
 	}
 	if assets[0].URL != "https://cdn.example.com/download/movie.mkv" {
 		t.Errorf("URL = %q, want download URL", assets[0].URL)
-	}
-}
-
-func TestDeleteTask(t *testing.T) {
-	client, _ := newTestHTTPClient(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			t.Errorf("method = %s, want POST", r.Method)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		w.Write(jsonEnvelope(nil))
-	})
-
-	err := client.DeleteTask(t.Context(), "torrent", "99")
-	if err != nil {
-		t.Fatalf("DeleteTask: %v", err)
-	}
-}
-
-func TestDeleteTask_EmptyRemoteID(t *testing.T) {
-	client, _ := newTestHTTPClient(t, func(w http.ResponseWriter, r *http.Request) {
-		t.Error("should not make HTTP request with empty remote ID")
-	})
-
-	err := client.DeleteTask(t.Context(), "torrent", "")
-	if err == nil {
-		t.Fatal("expected error for empty remote ID")
 	}
 }
 

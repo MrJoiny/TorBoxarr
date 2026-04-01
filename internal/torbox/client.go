@@ -13,7 +13,6 @@ type Client interface {
 	GetTaskStatus(ctx context.Context, sourceType string, remoteID string) (*TaskStatus, error)
 	FindActiveTask(ctx context.Context, sourceType string, remoteID, queueAuthID, remoteHash string) (*TaskStatus, error)
 	GetDownloadLinks(ctx context.Context, sourceType string, remoteID string) ([]DownloadAsset, error)
-	DeleteTask(ctx context.Context, sourceType string, remoteID string) error
 }
 
 type CreateTorrentTaskRequest struct {

@@ -7,7 +7,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -206,7 +205,7 @@ func TestProcessSubmitJob_Torrent(t *testing.T) {
 	}
 
 	job := makeWorkerJob("sub-001", "pub-sub-001", store.StateSubmitPending, store.SourceTypeTorrent)
-	job.SourceURI = new("magnet:?xt=urn:btih:abc")
+	job.SourceURI = strPtr("magnet:?xt=urn:btih:abc")
 	past := time.Now().UTC().Add(-1 * time.Minute)
 	job.NextRunAt = &past
 	if err := env.store.CreateJob(ctx, job); err != nil {
@@ -243,7 +242,7 @@ func TestProcessSubmitJob_Retry(t *testing.T) {
 	}
 
 	job := makeWorkerJob("retry-001", "pub-retry-001", store.StateSubmitPending, store.SourceTypeTorrent)
-	job.SourceURI = new("magnet:?xt=urn:btih:abc")
+	job.SourceURI = strPtr("magnet:?xt=urn:btih:abc")
 	past := time.Now().UTC().Add(-1 * time.Minute)
 	job.NextRunAt = &past
 	if err := env.store.CreateJob(ctx, job); err != nil {
@@ -280,7 +279,7 @@ func TestProcessSubmitJob_PermanentFailure(t *testing.T) {
 	}
 
 	job := makeWorkerJob("fail-001", "pub-fail-001", store.StateSubmitPending, store.SourceTypeTorrent)
-	job.SourceURI = new("magnet:?xt=urn:btih:abc")
+	job.SourceURI = strPtr("magnet:?xt=urn:btih:abc")
 	past := time.Now().UTC().Add(-1 * time.Minute)
 	job.NextRunAt = &past
 	if err := env.store.CreateJob(ctx, job); err != nil {
@@ -306,12 +305,6 @@ func TestProcessRemoveJob(t *testing.T) {
 	env := newWorkerEnv(t)
 	ctx := context.Background()
 
-	var deleteCalled atomic.Bool
-	env.mock.DeleteTaskFn = func(ctx context.Context, sourceType, remoteID string) error {
-		deleteCalled.Store(true)
-		return nil
-	}
-
 	staging := filepath.Join(env.tmpDir, "staging", "rem-001")
 	if err := os.MkdirAll(staging, 0o755); err != nil {
 		t.Fatal(err)
@@ -321,7 +314,7 @@ func TestProcessRemoveJob(t *testing.T) {
 	}
 
 	job := makeWorkerJob("rem-001", "pub-rem-001", store.StateRemovePending, store.SourceTypeTorrent)
-	job.RemoteID = new("remote-rem")
+	job.RemoteID = strPtr("remote-rem")
 	job.StagingPath = &staging
 	past := time.Now().UTC().Add(-1 * time.Minute)
 	job.NextRunAt = &past
@@ -341,10 +334,22 @@ func TestProcessRemoveJob(t *testing.T) {
 	cancel()
 	orch.Wait()
 
-	if !deleteCalled.Load() {
-		t.Error("expected DeleteTask to be called")
+	got, err := env.store.GetJobByID(ctx, "rem-001")
+	if err != nil {
+		t.Fatal(err)
 	}
-	// Staging dir should have been cleaned up
+	if got.RemoteID == nil || *got.RemoteID != "remote-rem" {
+		t.Fatalf("RemoteID = %v, want retained remote id %q", got.RemoteID, "remote-rem")
+	}
+	if got.StagingPath != nil {
+		t.Fatalf("StagingPath = %v, want nil after local cleanup", got.StagingPath)
+	}
+	if got.NextRunAt != nil {
+		t.Fatalf("NextRunAt = %v, want nil after removal", got.NextRunAt)
+	}
+	if got.ErrorMessage != nil {
+		t.Fatalf("ErrorMessage = %v, want nil after removal", got.ErrorMessage)
+	}
 	if _, err := os.Stat(staging); !os.IsNotExist(err) {
 		t.Error("staging dir should have been removed")
 	}
@@ -378,7 +383,7 @@ func TestProgressBytes_IncreasingUpdates(t *testing.T) {
 	}
 
 	job := makeWorkerJob("prog-001", "pub-prog-001", store.StateRemoteActive, store.SourceTypeTorrent)
-	job.RemoteID = new("remote-prog-001")
+	job.RemoteID = strPtr("remote-prog-001")
 	past := time.Now().UTC().Add(-1 * time.Minute)
 	job.NextRunAt = &past
 	if err := env.store.CreateJob(ctx, job); err != nil {
@@ -451,7 +456,7 @@ func TestProgressBytes_TotalChanges(t *testing.T) {
 	}
 
 	job := makeWorkerJob("total-001", "pub-total-001", store.StateRemoteActive, store.SourceTypeTorrent)
-	job.RemoteID = new("remote-total-001")
+	job.RemoteID = strPtr("remote-total-001")
 	past := time.Now().UTC().Add(-1 * time.Minute)
 	job.NextRunAt = &past
 	if err := env.store.CreateJob(ctx, job); err != nil {
@@ -501,7 +506,7 @@ func TestProgressBytes_ZeroStaysZero(t *testing.T) {
 	}
 
 	job := makeWorkerJob("zero-001", "pub-zero-001", store.StateRemoteActive, store.SourceTypeTorrent)
-	job.RemoteID = new("remote-zero-001")
+	job.RemoteID = strPtr("remote-zero-001")
 	past := time.Now().UTC().Add(-1 * time.Minute)
 	job.NextRunAt = &past
 	if err := env.store.CreateJob(ctx, job); err != nil {
@@ -548,7 +553,7 @@ func TestProcessPollJob_DownloadFinishedWithoutPresentStaysRemoteActive(t *testi
 	}
 
 	job := makeWorkerJob("not-ready-001", "pub-not-ready-001", store.StateRemoteActive, store.SourceTypeNZB)
-	job.RemoteID = new("remote-not-ready-001")
+	job.RemoteID = strPtr("remote-not-ready-001")
 	past := time.Now().UTC().Add(-1 * time.Minute)
 	job.NextRunAt = &past
 	initialUpdatedAt := job.UpdatedAt
@@ -598,7 +603,7 @@ func TestProcessPollJob_DownloadPresentTransitionsToLocalDownloadPending(t *test
 	}
 
 	job := makeWorkerJob("ready-001", "pub-ready-001", store.StateRemoteActive, store.SourceTypeNZB)
-	job.RemoteID = new("remote-ready-001")
+	job.RemoteID = strPtr("remote-ready-001")
 	past := time.Now().UTC().Add(-1 * time.Minute)
 	job.NextRunAt = &past
 	if err := env.store.CreateJob(ctx, job); err != nil {
@@ -651,7 +656,7 @@ func TestProgressBytes_MonotonicGuard(t *testing.T) {
 	}
 
 	job := makeWorkerJob("mono-001", "pub-mono-001", store.StateRemoteActive, store.SourceTypeTorrent)
-	job.RemoteID = new("remote-mono-001")
+	job.RemoteID = strPtr("remote-mono-001")
 	past := time.Now().UTC().Add(-1 * time.Minute)
 	job.NextRunAt = &past
 	if err := env.store.CreateJob(ctx, job); err != nil {

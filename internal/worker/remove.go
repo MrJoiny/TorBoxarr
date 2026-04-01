@@ -26,12 +26,7 @@ func (o *Orchestrator) runRemover(ctx context.Context) error {
 }
 
 func (o *Orchestrator) processRemoveJob(ctx context.Context, job *store.Job) error {
-	o.log.Info("removing job payloads", "job_id", job.ID, "public_id", job.PublicID, "remote_id", deref(job.RemoteID))
-	if job.RemoteID != nil {
-		if err := o.torbox.DeleteTask(ctx, string(job.SourceType), *job.RemoteID); err != nil {
-			o.log.Warn("remote delete failed", "job_id", job.ID, "remote_id", *job.RemoteID, "error", err)
-		}
-	}
+	o.log.Info("removing local job payloads", "job_id", job.ID, "public_id", job.PublicID, "remote_id", deref(job.RemoteID))
 	if job.CompletedPath != nil {
 		if err := ensurePathWithinRoot(o.layout.Completed, *job.CompletedPath); err != nil {
 			return o.failUnsafeRemoval(ctx, job, "completed path", *job.CompletedPath, err)
@@ -63,8 +58,8 @@ func (o *Orchestrator) processRemoveJob(ctx context.Context, job *store.Job) err
 	job.ErrorMessage = nil
 	job.NextRunAt = nil
 	job.UpdatedAt = time.Now().UTC()
-	o.log.Info("job removed", "job_id", job.ID, "public_id", job.PublicID)
-	return o.store.UpdateJobState(ctx, job, store.StateRemoved, "local payload removed")
+	o.log.Info("job removed locally; torbox content retained", "job_id", job.ID, "public_id", job.PublicID, "remote_id", deref(job.RemoteID))
+	return o.store.UpdateJobState(ctx, job, store.StateRemoved, "local payload removed; torbox content retained")
 }
 
 func (o *Orchestrator) runPruner(ctx context.Context) error {
