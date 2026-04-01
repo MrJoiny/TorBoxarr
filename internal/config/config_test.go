@@ -100,6 +100,14 @@ func TestApplyEnvAllowsExplicitDatabasePath(t *testing.T) {
 	}
 }
 
+func TestDefaultConfigKeepsTorBoxCreateHourlyLimit(t *testing.T) {
+	cfg := defaultConfig()
+
+	if cfg.TorBox.CreatePerHour != 60 {
+		t.Fatalf("TorBox.CreatePerHour = %d, want 60", cfg.TorBox.CreatePerHour)
+	}
+}
+
 func TestLoadDotEnvSetsUnsetVariablesOnly(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, ".env")

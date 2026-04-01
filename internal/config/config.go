@@ -45,7 +45,6 @@ type Config struct {
 		APIToken              string
 		RequestTimeout        time.Duration
 		DownloadTimeout       time.Duration
-		CreatePerMinute       int
 		CreatePerHour         int
 		PollPerMinute         int
 		DownloadLinkPerMinute int
@@ -105,7 +104,6 @@ func defaultConfig() Config {
 	cfg.TorBox.BaseURL = "https://api.torbox.app/v1"
 	cfg.TorBox.RequestTimeout = 45 * time.Second
 	cfg.TorBox.DownloadTimeout = 0
-	cfg.TorBox.CreatePerMinute = 10
 	cfg.TorBox.CreatePerHour = 60
 	cfg.TorBox.PollPerMinute = 300
 	cfg.TorBox.DownloadLinkPerMinute = 300

@@ -75,10 +75,7 @@ func run() error {
 	logger.Info("database ready")
 	st := store.New(db)
 
-	createLimiter := torbox.NewMultiLimiter(
-		torbox.NewTokenBucket(cfg.TorBox.CreatePerMinute, time.Minute),
-		torbox.NewTokenBucket(cfg.TorBox.CreatePerHour, time.Hour),
-	)
+	createLimiter := torbox.NewTokenBucket(cfg.TorBox.CreatePerHour, time.Hour)
 	pollLimiter := torbox.NewTokenBucket(cfg.TorBox.PollPerMinute, time.Minute)
 	dlLimiter := torbox.NewTokenBucket(cfg.TorBox.DownloadLinkPerMinute, time.Minute)
 	tbClient := torbox.NewHTTPClient(logger, cfg.TorBox.BaseURL, cfg.TorBox.APIToken, cfg.TorBox.UserAgent, cfg.TorBox.RequestTimeout, createLimiter, pollLimiter, dlLimiter)

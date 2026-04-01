@@ -402,7 +402,7 @@ func TestGetTaskStatus_FailedFinishedWithoutPresentRemainsFailed(t *testing.T) {
 }
 
 func TestGetTaskStatus_ExpandedFailureMarkers(t *testing.T) {
-	markers := []string{"aborted", "cancelled", "canceled", "cannot be completed", "repair failed"}
+	markers := []string{"aborted", "cancelled", "canceled", "cannot be completed", "repair failed", "incomplete"}
 	for _, marker := range markers {
 		t.Run(marker, func(t *testing.T) {
 			client, _ := newTestHTTPClient(t, func(w http.ResponseWriter, r *http.Request) {
