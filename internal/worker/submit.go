@@ -23,6 +23,7 @@ func (o *Orchestrator) runSubmitter(ctx context.Context) error {
 		if err := o.processSubmitJob(ctx, job); err != nil {
 			o.log.Error("submit job failed", "job_id", job.ID, "error", err)
 		}
+		o.releaseJobClaim(ctx, "submitter", job.ID)
 	}
 	return nil
 }

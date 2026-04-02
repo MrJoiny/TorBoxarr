@@ -21,6 +21,7 @@ func (o *Orchestrator) runFinalizer(ctx context.Context) error {
 		if err := o.processFinalizeJob(ctx, job); err != nil {
 			o.log.Error("finalize job failed", "job_id", job.ID, "error", err)
 		}
+		o.releaseJobClaim(ctx, "finalizer", job.ID)
 	}
 	return nil
 }

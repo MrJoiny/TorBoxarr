@@ -1,6 +1,7 @@
 package worker
 
 import (
+	"context"
 	"fmt"
 	"math/rand/v2"
 	"os"
@@ -119,4 +120,10 @@ func ensurePathWithinRoot(root, target string) error {
 		return fmt.Errorf("path %q escapes root %q", targetAbs, rootAbs)
 	}
 	return nil
+}
+
+func (o *Orchestrator) releaseJobClaim(ctx context.Context, workerName, jobID string) {
+	if err := o.store.ReleaseJobClaim(ctx, jobID); err != nil {
+		o.log.Error("failed to release job claim", "worker", workerName, "job_id", jobID, "error", err)
+	}
 }

@@ -36,6 +36,7 @@ func (o *Orchestrator) runDownloader(ctx context.Context) error {
 		if err := o.processDownloadJob(ctx, job); err != nil {
 			o.log.Error("download job failed", "job_id", job.ID, "error", err)
 		}
+		o.releaseJobClaim(ctx, "downloader", job.ID)
 	}
 	return nil
 }

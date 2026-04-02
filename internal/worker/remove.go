@@ -21,6 +21,7 @@ func (o *Orchestrator) runRemover(ctx context.Context) error {
 		if err := o.processRemoveJob(ctx, job); err != nil {
 			o.log.Error("remove job failed", "job_id", job.ID, "error", err)
 		}
+		o.releaseJobClaim(ctx, "remover", job.ID)
 	}
 	return nil
 }

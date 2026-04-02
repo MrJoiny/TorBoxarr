@@ -21,6 +21,7 @@ func (o *Orchestrator) runPoller(ctx context.Context) error {
 		if err := o.processPollJob(ctx, job); err != nil {
 			o.log.Error("poll job failed", "job_id", job.ID, "error", err)
 		}
+		o.releaseJobClaim(ctx, "poller", job.ID)
 	}
 	return nil
 }
