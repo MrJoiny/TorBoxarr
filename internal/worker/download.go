@@ -2,12 +2,17 @@ package worker
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/mrjoiny/torboxarr/internal/files"
 	"github.com/mrjoiny/torboxarr/internal/store"
+	"github.com/mrjoiny/torboxarr/internal/torbox"
 )
 
 const progressCheckpointInterval = 15 * time.Second
@@ -185,6 +190,20 @@ func (o *Orchestrator) processDownloadJob(ctx context.Context, job *store.Job) e
 			return nil
 		})
 		if downloadErr != nil {
+			var statusErr *files.HTTPStatusError
+			isNotFound := errors.As(downloadErr, &statusErr) && statusErr.StatusCode == http.StatusNotFound
+			refreshed := false
+			if refreshedPart, refreshErr := o.refreshDownloadPartSourceURL(ctx, job, part, downloadErr); refreshErr != nil {
+				o.log.Warn("failed to refresh download link after status error",
+					"job_id", job.ID,
+					"public_id", job.PublicID,
+					"part_key", part.PartKey,
+					"error", refreshErr,
+				)
+			} else if refreshedPart {
+				refreshed = true
+				downloadErr = fmt.Errorf("download link refreshed after HTTP 404")
+			}
 			msg := downloadErr.Error()
 			if err := o.store.UpsertTransferPart(ctx, part); err != nil {
 				o.log.Warn("failed to persist download progress after error",
@@ -193,6 +212,20 @@ func (o *Orchestrator) processDownloadJob(ctx context.Context, job *store.Job) e
 					"part_key", part.PartKey,
 					"error", err,
 				)
+			}
+			if isNotFound && !refreshed {
+				msg = "download part returned HTTP 404 and no fresh link was available"
+				job.ErrorMessage = &msg
+				job.NextRunAt = nil
+				job.UpdatedAt = time.Now().UTC()
+				o.log.Error("local download failed permanently",
+					"job_id", job.ID,
+					"public_id", job.PublicID,
+					"part_key", part.PartKey,
+					"error", msg,
+				)
+				_ = o.store.UpdateJobState(ctx, job, store.StateFailed, msg)
+				return nil
 			}
 			job.ErrorMessage = &msg
 			job.UpdatedAt = time.Now().UTC()
@@ -240,6 +273,66 @@ func (o *Orchestrator) processDownloadJob(ctx context.Context, job *store.Job) e
 	job.NextRunAt = &nextRun
 	o.log.Debug("download still in progress", "job_id", job.ID, "public_id", job.PublicID, "next_run_at", nextRun.Format(time.RFC3339Nano))
 	return o.store.UpdateJobState(ctx, job, store.StateLocalDownloading, "local download in progress")
+}
+
+func (o *Orchestrator) refreshDownloadPartSourceURL(ctx context.Context, job *store.Job, part *store.TransferPart, downloadErr error) (bool, error) {
+	var statusErr *files.HTTPStatusError
+	if !errors.As(downloadErr, &statusErr) || statusErr.StatusCode != http.StatusNotFound {
+		return false, nil
+	}
+	if strings.TrimSpace(deref(job.RemoteID)) == "" {
+		return false, nil
+	}
+
+	assets, err := o.torbox.GetDownloadLinks(ctx, string(job.SourceType), deref(job.RemoteID))
+	if err != nil {
+		return false, fmt.Errorf("refresh download links: %w", err)
+	}
+	asset, ok := findMatchingDownloadAsset(part, assets)
+	if !ok {
+		return false, nil
+	}
+	if asset.URL == "" || asset.URL == part.SourceURL {
+		return false, nil
+	}
+
+	part.SourceURL = asset.URL
+	if asset.FileID != "" {
+		part.FileID = &asset.FileID
+	}
+	if asset.Size > 0 && part.ContentLength == 0 {
+		part.ContentLength = asset.Size
+	}
+	part.UpdatedAt = time.Now().UTC()
+	if err := o.store.UpsertTransferPart(ctx, part); err != nil {
+		return false, fmt.Errorf("persist refreshed transfer part: %w", err)
+	}
+
+	o.log.Info("refreshed transfer part download link",
+		"job_id", job.ID,
+		"public_id", job.PublicID,
+		"part_key", part.PartKey,
+	)
+	return true, nil
+}
+
+func findMatchingDownloadAsset(part *store.TransferPart, assets []torbox.DownloadAsset) (torbox.DownloadAsset, bool) {
+	for idx, asset := range assets {
+		if partMatchesAsset(part, asset, idx) {
+			return asset, true
+		}
+	}
+	return torbox.DownloadAsset{}, false
+}
+
+func partMatchesAsset(part *store.TransferPart, asset torbox.DownloadAsset, idx int) bool {
+	if part.PartKey == partKey(asset, idx) {
+		return true
+	}
+	if part.FileID != nil && *part.FileID != "" && asset.FileID == *part.FileID {
+		return true
+	}
+	return part.RelativePath == safeRelativePath(asset.RelativePath, idx)
 }
 
 func shouldCheckpointProgress(lastPersist, now time.Time, done, total int64) bool {

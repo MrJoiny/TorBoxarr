@@ -23,6 +23,14 @@ type RangeDownloader struct {
 	writeBufSize int
 }
 
+type HTTPStatusError struct {
+	StatusCode int
+}
+
+func (e *HTTPStatusError) Error() string {
+	return fmt.Sprintf("download part status %d", e.StatusCode)
+}
+
 const (
 	downloadNotifyEvery  = 1 << 20
 	downloadWriteBufSize = 8 << 20
@@ -75,7 +83,7 @@ func (d *RangeDownloader) Download(ctx context.Context, part *store.TransferPart
 		}
 		return progress(part.BytesDone, part.ContentLength)
 	default:
-		return fmt.Errorf("download part status %d", resp.StatusCode)
+		return &HTTPStatusError{StatusCode: resp.StatusCode}
 	}
 
 	var file *os.File
