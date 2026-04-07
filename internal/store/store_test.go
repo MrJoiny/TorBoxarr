@@ -387,6 +387,75 @@ func TestUpsertTransferPart(t *testing.T) {
 	}
 }
 
+func TestUpsertTransferPart_RetriesOnBusyLock(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "busy-transfer.db")
+
+	db, err := store.Open(ctx, dbPath, time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := store.RunMigrationsFS(db, store.EmbeddedMigrations); err != nil {
+		t.Fatal(err)
+	}
+	st := store.New(db)
+
+	lockerDB, err := store.Open(ctx, dbPath, time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { lockerDB.Close() })
+
+	job := makeJob("tp-busy-001", "pub-tp-busy-001", store.StateLocalDownloading)
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+
+	lockerConn, err := lockerDB.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lockerConn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lockerConn.ExecContext(ctx, `UPDATE jobs SET updated_at = updated_at WHERE id = ?`, job.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	released := make(chan struct{})
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		_, _ = lockerConn.ExecContext(context.Background(), `ROLLBACK`)
+		_ = lockerConn.Close()
+		close(released)
+	}()
+
+	now := time.Now().UTC()
+	part := &store.TransferPart{
+		JobID:         job.ID,
+		PartKey:       "file-busy-0",
+		SourceURL:     "https://example.com/file.bin",
+		TempPath:      "/tmp/file.bin",
+		RelativePath:  "file.bin",
+		ContentLength: 1024,
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	if err := st.UpsertTransferPart(ctx, part); err != nil {
+		t.Fatalf("UpsertTransferPart: %v", err)
+	}
+	<-released
+
+	parts, err := st.ListTransferParts(ctx, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parts) != 1 {
+		t.Fatalf("got %d parts, want 1", len(parts))
+	}
+}
+
 func TestListTransferParts(t *testing.T) {
 	st := newTestStore(t)
 	ctx := context.Background()
@@ -624,6 +693,72 @@ func TestReleaseJobClaim(t *testing.T) {
 	}
 	if len(claimed2) != 1 {
 		t.Errorf("expected 1 claimable job after release, got %d", len(claimed2))
+	}
+}
+
+func TestReleaseJobClaim_RetriesOnBusyLock(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "busy-claim.db")
+
+	db, err := store.Open(ctx, dbPath, time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { db.Close() })
+	if err := store.RunMigrationsFS(db, store.EmbeddedMigrations); err != nil {
+		t.Fatal(err)
+	}
+	st := store.New(db)
+
+	lockerDB, err := store.Open(ctx, dbPath, time.Millisecond)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { lockerDB.Close() })
+
+	now := time.Now().UTC()
+	job := makeJob("rel-busy-001", "pub-rel-busy-001", store.StateSubmitPending)
+	past := now.Add(-time.Minute)
+	job.NextRunAt = &past
+	if err := st.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+
+	claimed, err := st.ClaimJobsDue(ctx, "w1", []store.JobState{store.StateSubmitPending}, now, 1)
+	if err != nil || len(claimed) != 1 {
+		t.Fatalf("ClaimJobsDue: err=%v len=%d", err, len(claimed))
+	}
+
+	lockerConn, err := lockerDB.Conn(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lockerConn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := lockerConn.ExecContext(ctx, `UPDATE jobs SET updated_at = updated_at WHERE id = ?`, job.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	released := make(chan struct{})
+	go func() {
+		time.Sleep(150 * time.Millisecond)
+		_, _ = lockerConn.ExecContext(context.Background(), `ROLLBACK`)
+		_ = lockerConn.Close()
+		close(released)
+	}()
+
+	if err := st.ReleaseJobClaim(ctx, job.ID); err != nil {
+		t.Fatalf("ReleaseJobClaim: %v", err)
+	}
+	<-released
+
+	got, err := st.GetJobByID(ctx, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ClaimedBy != nil || got.ClaimedAt != nil {
+		t.Fatalf("claim still set after retry: claimed_by=%v claimed_at=%v", got.ClaimedBy, got.ClaimedAt)
 	}
 }
 

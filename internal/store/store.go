@@ -28,6 +28,15 @@ type Store struct {
 	now func() time.Time
 }
 
+const (
+	sqlitePrimaryCodeMask    = 0xff
+	sqliteBusyCode           = 5
+	sqliteLockedCode         = 6
+	sqliteBusyRetryAttempts  = 6
+	sqliteBusyRetryBaseDelay = 25 * time.Millisecond
+	sqliteBusyRetryMaxDelay  = 250 * time.Millisecond
+)
+
 const jobColumns = `
         id, public_id, source_type, client_kind, category, state, submission_key,
         remote_id, queued_id, queue_auth_id, remote_hash, display_name, info_hash,
@@ -47,6 +56,9 @@ func Open(ctx context.Context, path string, busyTimeout time.Duration) (*sql.DB,
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
+	// SQLite performs best when a single process does not contend with itself.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 
 	pragmas := []string{
 		"PRAGMA journal_mode = WAL;",
@@ -106,13 +118,19 @@ func (s *Store) DB() *sql.DB {
 	return s.db
 }
 
+func (s *Store) execWrite(ctx context.Context, query string, args ...any) (sql.Result, error) {
+	return retrySQLiteBusy(ctx, func() (sql.Result, error) {
+		return s.db.ExecContext(ctx, query, args...)
+	})
+}
+
 func (s *Store) CreateJob(ctx context.Context, job *Job) error {
 	metadataJSON, err := json.Marshal(job.Metadata)
 	if err != nil {
 		return fmt.Errorf("marshal metadata: %w", err)
 	}
 
-	_, err = s.db.ExecContext(ctx, `
+	_, err = s.execWrite(ctx, `
         INSERT INTO jobs (
             id, public_id, source_type, client_kind, category, state, submission_key,
             remote_id, queued_id, queue_auth_id, remote_hash, display_name, info_hash, source_uri, payload_ref, staging_path,
@@ -161,7 +179,7 @@ func (s *Store) UpdateJob(ctx context.Context, job *Job) error {
 		return fmt.Errorf("marshal metadata: %w", err)
 	}
 
-	_, err = s.db.ExecContext(ctx, `
+	_, err = s.execWrite(ctx, `
         UPDATE jobs
         SET source_type = ?,
             client_kind = ?,
@@ -234,7 +252,7 @@ func (s *Store) UpdateJobState(ctx context.Context, job *Job, next JobState, mes
 }
 
 func (s *Store) AppendEvent(ctx context.Context, jobID string, from, to *JobState, message string) error {
-	_, err := s.db.ExecContext(ctx, `
+	_, err := s.execWrite(ctx, `
         INSERT INTO job_events (job_id, from_state, to_state, message, created_at)
         VALUES (?, ?, ?, ?, ?)
     `,
@@ -356,12 +374,6 @@ func (s *Store) ClaimJobsDue(ctx context.Context, workerID string, states []JobS
 		return nil, nil
 	}
 
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, fmt.Errorf("begin tx: %w", err)
-	}
-	defer tx.Rollback()
-
 	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(states)), ",")
 	args := make([]any, 0, len(states)+2)
 	for _, state := range states {
@@ -379,44 +391,55 @@ func (s *Store) ClaimJobsDue(ctx context.Context, workerID string, states []JobS
 		LIMIT ?
 	`, placeholders)
 
-	rows, err := tx.QueryContext(ctx, selectQuery, args...)
-	if err != nil {
-		return nil, fmt.Errorf("select due jobs: %w", err)
-	}
-	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
+	ids, err := retrySQLiteBusy(ctx, func() ([]string, error) {
+		tx, err := s.db.BeginTx(ctx, nil)
+		if err != nil {
+			return nil, fmt.Errorf("begin tx: %w", err)
+		}
+		defer tx.Rollback()
+
+		rows, err := tx.QueryContext(ctx, selectQuery, args...)
+		if err != nil {
+			return nil, fmt.Errorf("select due jobs: %w", err)
+		}
+		var ids []string
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			ids = append(ids, id)
+		}
+		rows.Close()
+		if err := rows.Err(); err != nil {
 			return nil, err
 		}
-		ids = append(ids, id)
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
+		if len(ids) == 0 {
+			return nil, nil
+		}
+
+		idPlaceholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
+		claimArgs := make([]any, 0, len(ids)+2)
+		claimArgs = append(claimArgs, workerID, formatTime(now))
+		for _, id := range ids {
+			claimArgs = append(claimArgs, id)
+		}
+		claimQuery := fmt.Sprintf(`
+			UPDATE jobs SET claimed_by = ?, claimed_at = ?
+			WHERE id IN (%s)
+		`, idPlaceholders)
+		if _, err := tx.ExecContext(ctx, claimQuery, claimArgs...); err != nil {
+			return nil, fmt.Errorf("claim jobs: %w", err)
+		}
+
+		if err := tx.Commit(); err != nil {
+			return nil, fmt.Errorf("commit claim: %w", err)
+		}
+		return ids, nil
+	})
+	if err != nil {
 		return nil, err
-	}
-	if len(ids) == 0 {
-		return nil, nil
-	}
-
-	// Claim them
-	idPlaceholders := strings.TrimSuffix(strings.Repeat("?,", len(ids)), ",")
-	claimArgs := make([]any, 0, len(ids)+2)
-	claimArgs = append(claimArgs, workerID, formatTime(now))
-	for _, id := range ids {
-		claimArgs = append(claimArgs, id)
-	}
-	claimQuery := fmt.Sprintf(`
-		UPDATE jobs SET claimed_by = ?, claimed_at = ?
-		WHERE id IN (%s)
-	`, idPlaceholders)
-	if _, err := tx.ExecContext(ctx, claimQuery, claimArgs...); err != nil {
-		return nil, fmt.Errorf("claim jobs: %w", err)
-	}
-
-	if err := tx.Commit(); err != nil {
-		return nil, fmt.Errorf("commit claim: %w", err)
 	}
 
 	// Now fetch the full job objects
@@ -425,7 +448,7 @@ func (s *Store) ClaimJobsDue(ctx context.Context, workerID string, states []JobS
 
 // ReleaseJobClaim clears the claimed_by field after processing.
 func (s *Store) ReleaseJobClaim(ctx context.Context, jobID string) error {
-	_, err := s.db.ExecContext(ctx, `
+	_, err := s.execWrite(ctx, `
 		UPDATE jobs SET claimed_by = NULL, claimed_at = NULL WHERE id = ?
 	`, jobID)
 	return err
@@ -434,7 +457,7 @@ func (s *Store) ReleaseJobClaim(ctx context.Context, jobID string) error {
 // ReleaseAllClaims clears all outstanding claims. Used on startup to recover
 // from crashes that left jobs claimed by a previous process.
 func (s *Store) ReleaseAllClaims(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx,
+	_, err := s.execWrite(ctx,
 		`UPDATE jobs SET claimed_by = NULL, claimed_at = NULL WHERE claimed_by IS NOT NULL`)
 	return err
 }
@@ -459,7 +482,7 @@ func (s *Store) GetJobsByIDs(ctx context.Context, ids []string) ([]*Job, error) 
 }
 
 func (s *Store) DeleteRemovedOlderThan(ctx context.Context, cutoff time.Time) (int64, error) {
-	result, err := s.db.ExecContext(ctx, `DELETE FROM jobs WHERE state = 'removed' AND updated_at < ?`, formatTime(cutoff))
+	result, err := s.execWrite(ctx, `DELETE FROM jobs WHERE state = 'removed' AND updated_at < ?`, formatTime(cutoff))
 	if err != nil {
 		return 0, fmt.Errorf("prune removed jobs: %w", err)
 	}
@@ -468,7 +491,7 @@ func (s *Store) DeleteRemovedOlderThan(ctx context.Context, cutoff time.Time) (i
 }
 
 func (s *Store) UpsertTransferPart(ctx context.Context, part *TransferPart) error {
-	_, err := s.db.ExecContext(ctx, `
+	_, err := s.execWrite(ctx, `
         INSERT INTO transfer_parts (
             job_id, part_key, file_id, source_url, temp_path, relative_path,
             content_length, bytes_done, etag, completed, created_at, updated_at
@@ -525,7 +548,7 @@ func (s *Store) ListTransferParts(ctx context.Context, jobID string) ([]*Transfe
 }
 
 func (s *Store) DeleteTransferParts(ctx context.Context, jobID string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM transfer_parts WHERE job_id = ?`, jobID)
+	_, err := s.execWrite(ctx, `DELETE FROM transfer_parts WHERE job_id = ?`, jobID)
 	if err != nil {
 		return fmt.Errorf("delete transfer parts: %w", err)
 	}
@@ -533,7 +556,7 @@ func (s *Store) DeleteTransferParts(ctx context.Context, jobID string) error {
 }
 
 func (s *Store) CreateQBitSession(ctx context.Context, sid, username string, expiresAt time.Time) error {
-	_, err := s.db.ExecContext(ctx, `
+	_, err := s.execWrite(ctx, `
         INSERT INTO qbit_sessions (sid, username, expires_at, created_at)
         VALUES (?, ?, ?, ?)
     `, sid, username, formatTime(expiresAt), formatTime(s.now()))
@@ -560,7 +583,7 @@ func (s *Store) ValidateQBitSession(ctx context.Context, sid string) (bool, erro
 }
 
 func (s *Store) DeleteQBitSession(ctx context.Context, sid string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM qbit_sessions WHERE sid = ?`, sid)
+	_, err := s.execWrite(ctx, `DELETE FROM qbit_sessions WHERE sid = ?`, sid)
 	if err != nil {
 		return fmt.Errorf("delete qbit session: %w", err)
 	}
@@ -568,7 +591,7 @@ func (s *Store) DeleteQBitSession(ctx context.Context, sid string) error {
 }
 
 func (s *Store) PruneExpiredQBitSessions(ctx context.Context) (int64, error) {
-	result, err := s.db.ExecContext(ctx, `DELETE FROM qbit_sessions WHERE expires_at <= ?`, formatTime(s.now()))
+	result, err := s.execWrite(ctx, `DELETE FROM qbit_sessions WHERE expires_at <= ?`, formatTime(s.now()))
 	if err != nil {
 		return 0, fmt.Errorf("prune qbit sessions: %w", err)
 	}
@@ -795,4 +818,60 @@ func boolToInt(v bool) int {
 		return 1
 	}
 	return 0
+}
+
+func retrySQLiteBusy[T any](ctx context.Context, fn func() (T, error)) (T, error) {
+	var zero T
+	delay := sqliteBusyRetryBaseDelay
+	for attempt := 0; ; attempt++ {
+		value, err := fn()
+		if err == nil {
+			return value, nil
+		}
+		if !isSQLiteBusy(err) || attempt >= sqliteBusyRetryAttempts-1 {
+			return zero, err
+		}
+		if err := sleepContext(ctx, delay); err != nil {
+			return zero, err
+		}
+		if delay < sqliteBusyRetryMaxDelay {
+			delay *= 2
+			if delay > sqliteBusyRetryMaxDelay {
+				delay = sqliteBusyRetryMaxDelay
+			}
+		}
+	}
+}
+
+func sleepContext(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func isSQLiteBusy(err error) bool {
+	if err == nil {
+		return false
+	}
+	type sqliteCodeError interface {
+		Code() int
+	}
+	var codeErr sqliteCodeError
+	if errors.As(err, &codeErr) {
+		switch codeErr.Code() & sqlitePrimaryCodeMask {
+		case sqliteBusyCode, sqliteLockedCode:
+			return true
+		}
+	}
+
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "sqlite_busy") ||
+		strings.Contains(msg, "sqlite_locked") ||
+		strings.Contains(msg, "database is locked") ||
+		strings.Contains(msg, "database table is locked")
 }
