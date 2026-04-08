@@ -20,6 +20,8 @@ import (
 	"github.com/mrjoiny/torboxarr/internal/worker"
 )
 
+var version = "dev"
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintln(os.Stderr, err)
@@ -34,6 +36,7 @@ func run() error {
 	}
 
 	logger := newLogger(cfg.Logging.Level)
+	logger.Info("starting torboxarr", "version", version)
 	logger.Info("configuration loaded",
 		"log_level", cfg.Logging.Level,
 		"server_address", cfg.Server.Address,

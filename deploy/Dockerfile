@@ -4,9 +4,10 @@ ARG TARGETOS
 ARG TARGETARCH
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod     --mount=type=cache,target=/root/.cache/go-build     go mod download
+COPY VERSION ./VERSION
 COPY cmd ./cmd
 COPY internal ./internal
-RUN --mount=type=cache,target=/go/pkg/mod     --mount=type=cache,target=/root/.cache/go-build     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o /out/torboxarr ./cmd/torboxarr
+RUN --mount=type=cache,target=/go/pkg/mod     --mount=type=cache,target=/root/.cache/go-build     VERSION="$(tr -d '\r\n' < VERSION)" && CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -ldflags "-X main.version=$VERSION" -o /out/torboxarr ./cmd/torboxarr
 
 FROM alpine:3.23.3
 RUN apk add --no-cache ca-certificates su-exec
