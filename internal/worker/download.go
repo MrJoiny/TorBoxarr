@@ -16,6 +16,7 @@ import (
 )
 
 const progressCheckpointInterval = 15 * time.Second
+const max5xxRetries = 3
 
 func progressRateMBs(lastLogAt time.Time, lastLogDone, done int64, now time.Time) float64 {
 	if lastLogAt.IsZero() {
@@ -144,6 +145,7 @@ func (o *Orchestrator) processDownloadJob(ctx context.Context, job *store.Job) e
 		lastProgressLogDone := int64(0)
 		lastProgressPersist := time.Time{}
 		downloadErr := o.downloader.Download(ctx, part, func(done, total int64) error {
+			reset5xxCount(job, part.BytesDone, done)
 			part.BytesDone = done
 			if total > 0 {
 				part.ContentLength = total
@@ -191,7 +193,15 @@ func (o *Orchestrator) processDownloadJob(ctx context.Context, job *store.Job) e
 		})
 		if downloadErr != nil {
 			var statusErr *files.HTTPStatusError
-			isNotFound := errors.As(downloadErr, &statusErr) && statusErr.StatusCode == http.StatusNotFound
+			statusCode := 0
+			if errors.As(downloadErr, &statusErr) {
+				statusCode = statusErr.StatusCode
+			}
+			isNotFound := statusCode == http.StatusNotFound
+			is5xx := isRefresh5xx(statusCode)
+			if !is5xx {
+				job.RetryCount = 0
+			}
 			refreshed := false
 			if refreshedPart, refreshErr := o.refreshDownloadPartSourceURL(ctx, job, part, downloadErr); refreshErr != nil {
 				o.log.Warn("failed to refresh download link after status error",
@@ -202,7 +212,18 @@ func (o *Orchestrator) processDownloadJob(ctx context.Context, job *store.Job) e
 				)
 			} else if refreshedPart {
 				refreshed = true
-				downloadErr = fmt.Errorf("download link refreshed after HTTP 404")
+				downloadErr = fmt.Errorf("download link refreshed after HTTP %d", statusCode)
+			}
+			if is5xx {
+				job.RetryCount++
+				o.log.Warn("5xx download response recorded",
+					"job_id", job.ID,
+					"public_id", job.PublicID,
+					"part_key", part.PartKey,
+					"status_code", statusCode,
+					"retry_count", job.RetryCount,
+					"refreshed", refreshed,
+				)
 			}
 			msg := downloadErr.Error()
 			if err := o.store.UpsertTransferPart(ctx, part); err != nil {
@@ -227,6 +248,23 @@ func (o *Orchestrator) processDownloadJob(ctx context.Context, job *store.Job) e
 				_ = o.store.UpdateJobState(ctx, job, store.StateFailed, msg)
 				return nil
 			}
+			if is5xx && job.RetryCount >= max5xxRetries {
+				msg = fmt.Sprintf("download part %s returned HTTP %d %d consecutive times",
+					part.PartKey, statusCode, job.RetryCount)
+				job.ErrorMessage = &msg
+				job.NextRunAt = nil
+				job.UpdatedAt = time.Now().UTC()
+				o.log.Error("local download failed permanently after repeated 5xx",
+					"job_id", job.ID,
+					"public_id", job.PublicID,
+					"part_key", part.PartKey,
+					"status_code", statusCode,
+					"retry_count", job.RetryCount,
+					"error", msg,
+				)
+				_ = o.store.UpdateJobState(ctx, job, store.StateFailed, msg)
+				return nil
+			}
 			job.ErrorMessage = &msg
 			job.UpdatedAt = time.Now().UTC()
 			nextRun := time.Now().UTC().Add(o.cfg.Workers.DownloadInterval)
@@ -241,6 +279,7 @@ func (o *Orchestrator) processDownloadJob(ctx context.Context, job *store.Job) e
 			_ = o.store.UpdateJobState(ctx, job, store.StateLocalDownloading, msg)
 			return nil
 		}
+		job.RetryCount = 0
 		part.Completed = part.ContentLength == 0 || part.BytesDone >= part.ContentLength
 		part.UpdatedAt = time.Now().UTC()
 		o.log.Info("transfer part complete",
@@ -277,7 +316,7 @@ func (o *Orchestrator) processDownloadJob(ctx context.Context, job *store.Job) e
 
 func (o *Orchestrator) refreshDownloadPartSourceURL(ctx context.Context, job *store.Job, part *store.TransferPart, downloadErr error) (bool, error) {
 	var statusErr *files.HTTPStatusError
-	if !errors.As(downloadErr, &statusErr) || statusErr.StatusCode != http.StatusNotFound {
+	if !errors.As(downloadErr, &statusErr) || !shouldRefreshLink(statusErr.StatusCode) {
 		return false, nil
 	}
 	if strings.TrimSpace(deref(job.RemoteID)) == "" {
@@ -312,8 +351,23 @@ func (o *Orchestrator) refreshDownloadPartSourceURL(ctx context.Context, job *st
 		"job_id", job.ID,
 		"public_id", job.PublicID,
 		"part_key", part.PartKey,
+		"status_code", statusErr.StatusCode,
 	)
 	return true, nil
+}
+
+func shouldRefreshLink(statusCode int) bool {
+	return statusCode == http.StatusNotFound || isRefresh5xx(statusCode)
+}
+
+func isRefresh5xx(statusCode int) bool {
+	return statusCode >= http.StatusInternalServerError && statusCode < 600
+}
+
+func reset5xxCount(job *store.Job, prevDone, done int64) {
+	if done > prevDone && job.RetryCount > 0 {
+		job.RetryCount = 0
+	}
 }
 
 func findMatchingDownloadAsset(part *store.TransferPart, assets []torbox.DownloadAsset) (torbox.DownloadAsset, bool) {

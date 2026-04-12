@@ -3,6 +3,8 @@ package worker
 import (
 	"testing"
 	"time"
+
+	"github.com/mrjoiny/torboxarr/internal/store"
 )
 
 func TestProgressRateMBs(t *testing.T) {
@@ -81,5 +83,18 @@ func TestShouldCheckpointProgress(t *testing.T) {
 	}
 	if !shouldCheckpointProgress(now, now.Add(5*time.Second), 10, 10) {
 		t.Fatal("expected completed progress to persist immediately")
+	}
+}
+
+func TestReset5xxCount(t *testing.T) {
+	job := &store.Job{RetryCount: 2}
+	reset5xxCount(job, 10, 10)
+	if job.RetryCount != 2 {
+		t.Fatalf("RetryCount = %d, want 2 without progress", job.RetryCount)
+	}
+
+	reset5xxCount(job, 10, 20)
+	if job.RetryCount != 0 {
+		t.Fatalf("RetryCount = %d, want 0 after progress", job.RetryCount)
 	}
 }
