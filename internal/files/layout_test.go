@@ -48,6 +48,22 @@ func TestCompletedPathForJob(t *testing.T) {
 	}
 }
 
+func TestCompletedPathForJob_TruncatesLongDisplayName(t *testing.T) {
+	tmpDir := t.TempDir()
+	layout := files.NewLayout(tmpDir, filepath.Join(tmpDir, "staging"), filepath.Join(tmpDir, "completed"), filepath.Join(tmpDir, "payloads"))
+	jobID := "17f0910560b14d999bec876c88ecf6ce"
+	name := "A Livid Lady's Guide to Getting Even How I Crushed My Homeland with My Mighty Grimoires S01E07 1080p CR WEB-DL AAC 2.0 H.264 _ Buchigire Reijou wa Houfuku wo Chikaimashita. Madousho no Chikara de Sokoku wo Tatakitsubushimasu"
+
+	got := layout.CompletedPathForJob("sonarr", name, jobID)
+	component := filepath.Base(got)
+	if len(component) > 255 {
+		t.Fatalf("completed path component is %d bytes, want <= 255: %q", len(component), component)
+	}
+	if !strings.HasSuffix(component, "-"+jobID) {
+		t.Fatalf("completed path component %q does not retain job ID suffix", component)
+	}
+}
+
 func TestSavePayload(t *testing.T) {
 	tmpDir := t.TempDir()
 	layout := files.NewLayout(tmpDir,
