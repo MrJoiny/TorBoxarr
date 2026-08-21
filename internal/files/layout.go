@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 )
 
 type Layout struct {
@@ -65,7 +66,24 @@ func (l *Layout) CompletedPathForJob(category, displayName, jobID string) string
 	if name == "" {
 		name = jobID
 	}
-	return filepath.Join(l.Completed, category, fmt.Sprintf("%s-%s", name, jobID))
+	suffix := "-" + jobID
+	return filepath.Join(l.Completed, category, truncateName(name, maxFilenameBytes-len(suffix))+suffix)
+}
+
+const maxFilenameBytes = 255
+
+func truncateName(name string, maxBytes int) string {
+	if len(name) <= maxBytes {
+		return name
+	}
+	if maxBytes <= 0 {
+		return ""
+	}
+	name = name[:maxBytes]
+	for !utf8.ValidString(name) {
+		name = name[:len(name)-1]
+	}
+	return name
 }
 
 func (l *Layout) SavePayload(jobID, name string, reader io.Reader) (string, string, error) {
