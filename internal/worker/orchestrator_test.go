@@ -61,7 +61,11 @@ func newWorkerEnv(t *testing.T) *workerEnv {
 
 func (env *workerEnv) newOrchestrator(t *testing.T) *worker.Orchestrator {
 	t.Helper()
-	cfg := workerConfig(env.tmpDir)
+	return newOrchestratorWithConfig(t, env, workerConfig(env.tmpDir))
+}
+
+func newOrchestratorWithConfig(t *testing.T, env *workerEnv, cfg *config.Config) *worker.Orchestrator {
+	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	downloader := files.NewRangeDownloader(logger, 30*time.Second)
 	return worker.NewOrchestrator(cfg, logger, env.store, env.layout, downloader, env.mock)

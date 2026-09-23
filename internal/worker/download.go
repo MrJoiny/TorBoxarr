@@ -57,6 +57,10 @@ func (o *Orchestrator) processDownloadJob(ctx context.Context, job *store.Job) e
 		return fmt.Errorf("ensure staging path: %w", err)
 	}
 
+	if o.cfg.Link.Root != "" {
+		return o.processLinkJob(ctx, job)
+	}
+
 	parts, err := o.store.ListTransferParts(ctx, job.ID)
 	if err != nil {
 		return err
