@@ -183,9 +183,7 @@ func (o *Orchestrator) applyActiveStatus(ctx context.Context, job *store.Job, st
 		job.UpdatedAt = time.Now().UTC()
 		return o.store.UpdateJob(ctx, job)
 	}
-	if status.Name != "" {
-		job.DisplayName = status.Name
-	}
+	takeRemoteName(job, status.Name)
 	if status.RemoteID != "" {
 		job.RemoteID = ptr(status.RemoteID)
 	}

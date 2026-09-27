@@ -277,6 +277,15 @@ func extractInfoHash(source string) string {
 	return normalizeBTIH(source)
 }
 
+// dn= of a magnet link, the release title the arr grabbed
+func magnetName(source string) string {
+	parsed, err := url.Parse(strings.TrimSpace(source))
+	if err != nil || !strings.EqualFold(parsed.Scheme, "magnet") {
+		return ""
+	}
+	return strings.TrimSpace(parsed.Query().Get("dn"))
+}
+
 func normalizeBTIH(v string) string {
 	v = strings.TrimSpace(v)
 	switch len(v) {

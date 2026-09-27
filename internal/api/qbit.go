@@ -154,7 +154,7 @@ func (s *Server) handleQBitAdd(w http.ResponseWriter, r *http.Request) {
 			infoHash := extractInfoHash(line)
 			displayName := rename
 			if displayName == "" {
-				displayName = firstNonEmpty(infoHash, line)
+				displayName = firstNonEmpty(magnetName(line), infoHash, line)
 			}
 			if _, _, err := s.enqueueSubmission(r.Context(), SubmissionRequest{
 				SourceType:  store.SourceTypeTorrent,
