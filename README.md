@@ -62,6 +62,18 @@ Optional overrides:
 | `TORBOXARR_DATABASE_PATH` | `/config/torboxarr.db` | SQLite database path; the container stores state under `/config` |
 | `TORBOXARR_LOG_LEVEL` | `INFO` | Log verbosity: DEBUG, INFO, WARN, or ERROR |
 | `TORBOXARR_SAB_NZB_KEY` | falls back to `TORBOXARR_SAB_API_KEY` | Explicit key for the SABnzbd-compatible endpoint; omit it to reuse the SAB API key |
+| `TORBOXARR_LINK_ROOT` | unset (off) | Enables link mode: path of a mount that already serves your TorBox files; finished jobs are symlinked from there instead of downloaded (see below) |
+| `TORBOXARR_LINK_WAIT` | `2h` | Link mode only: how long to wait for a finished item to appear on the mount before failing the job |
+
+### Link mode (no local downloads)
+
+If you already mount your TorBox content (for example with decypharr, rclone or the TorBox WebDAV), set `TORBOXARR_LINK_ROOT` to the directory that holds one folder per TorBox item, e.g. `/mnt/decypharr/__all__`. For each finished job TorBoxarr then:
+
+1. reads the item's file list from TorBox (no download links are requested),
+2. waits until each video file is visible at `<LINK_ROOT>/<item folder>/<file>`,
+3. creates symlinks to those files in the job's staging folder and completes the job as usual.
+
+Sonarr/Radarr import the symlinks, so the media streams from TorBox and nothing but symlinks is stored locally. Link mode never falls back to downloading: if the files do not show up within `TORBOXARR_LINK_WAIT`, the job fails with an error in the queue. The mount must be visible inside the TorBoxarr container at the same path the *arr apps see.
 
 Docker-specific runtime variables used by the bundled compose file. Set these to the same UID/GID that Sonarr and Radarr use on the host, so TorBoxarr can write to the same download and category folders:
 

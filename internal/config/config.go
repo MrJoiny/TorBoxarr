@@ -66,6 +66,12 @@ type Config struct {
 		DefaultCategory string
 	}
 
+	// Link mode (see internal/worker/link.go)
+	Link struct {
+		Root string
+		Wait time.Duration
+	}
+
 	Workers struct {
 		SubmitInterval   time.Duration
 		PollInterval     time.Duration
@@ -167,6 +173,14 @@ func applyEnv(cfg *Config) {
 	setString(&cfg.Auth.QBitPassword, "TORBOXARR_QBIT_PASSWORD")
 	setString(&cfg.Auth.SABAPIKey, "TORBOXARR_SAB_API_KEY")
 	setString(&cfg.Auth.SABNZBKey, "TORBOXARR_SAB_NZB_KEY")
+
+	setString(&cfg.Link.Root, "TORBOXARR_LINK_ROOT")
+	cfg.Link.Wait = 2 * time.Hour
+	if v := strings.TrimSpace(os.Getenv("TORBOXARR_LINK_WAIT")); v != "" {
+		if d, err := time.ParseDuration(v); err == nil && d > 0 {
+			cfg.Link.Wait = d
+		}
+	}
 }
 
 func (c *Config) Validate() error {
