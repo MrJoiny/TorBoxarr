@@ -3,6 +3,7 @@ package worker
 import (
 	"context"
 	"fmt"
+	"html"
 	"math/rand/v2"
 	"os"
 	"path"
@@ -125,5 +126,19 @@ func ensurePathWithinRoot(root, target string) error {
 func (o *Orchestrator) releaseJobClaim(ctx context.Context, workerName, jobID string) {
 	if err := o.store.ReleaseJobClaim(ctx, jobID); err != nil {
 		o.log.Error("failed to release job claim", "worker", workerName, "job_id", jobID, "error", err)
+	}
+}
+
+// torbox's name only replaces a placeholder (empty, or the info hash from a bare magnet). a magnet dn
+// or the arr's own name is what sonarr/radarr parse, and torbox mangles it: html-escapes (&#039;)
+// and sometimes cuts it at an apostrophe ("Conan O")
+func takeRemoteName(job *store.Job, name string) {
+	name = html.UnescapeString(strings.TrimSpace(name))
+	if name == "" {
+		return
+	}
+	cur := strings.TrimSpace(job.DisplayName)
+	if cur == "" || (job.InfoHash != nil && strings.EqualFold(cur, *job.InfoHash)) || (job.RemoteHash != nil && strings.EqualFold(cur, *job.RemoteHash)) {
+		job.DisplayName = name
 	}
 }

@@ -203,12 +203,14 @@ func TestProcessSubmitJob_Torrent(t *testing.T) {
 		return &torbox.CreateTaskResponse{
 			RemoteID:    "remote-123",
 			RemoteHash:  "hash-abc",
-			DisplayName: "Remote Name",
+			DisplayName: "Remote Name&#039;s &amp; Co",
 		}, nil
 	}
 
 	job := makeWorkerJob("sub-001", "pub-sub-001", store.StateSubmitPending, store.SourceTypeTorrent)
 	job.SourceURI = strPtr("magnet:?xt=urn:btih:abc")
+	job.InfoHash = strPtr("abc")
+	job.DisplayName = "abc"
 	past := time.Now().UTC().Add(-1 * time.Minute)
 	job.NextRunAt = &past
 	if err := env.store.CreateJob(ctx, job); err != nil {
@@ -233,6 +235,52 @@ func TestProcessSubmitJob_Torrent(t *testing.T) {
 	}
 	if got.RemoteID == nil || *got.RemoteID != "remote-123" {
 		t.Errorf("RemoteID = %v, want %q", got.RemoteID, "remote-123")
+	}
+	if got.DisplayName != "Remote Name's & Co" {
+		t.Errorf("DisplayName = %q, want html-unescaped %q", got.DisplayName, "Remote Name's & Co")
+	}
+}
+
+func TestProcessSubmitJob_KeepsMagnetName(t *testing.T) {
+	env := newWorkerEnv(t)
+	ctx := context.Background()
+
+	env.mock.CreateTorrentTaskFn = func(ctx context.Context, req torbox.CreateTorrentTaskRequest) (*torbox.CreateTaskResponse, error) {
+		return &torbox.CreateTaskResponse{
+			RemoteID:    "remote-456",
+			RemoteHash:  "hash-def",
+			DisplayName: "Conan O", // torbox cut the dn at the apostrophe
+		}, nil
+	}
+
+	job := makeWorkerJob("sub-002", "pub-sub-002", store.StateSubmitPending, store.SourceTypeTorrent)
+	job.SourceURI = strPtr("magnet:?xt=urn:btih:def&dn=Conan+O'Brien+Must+Go+S02")
+	job.InfoHash = strPtr("def")
+	job.DisplayName = "Conan O'Brien Must Go S02"
+	past := time.Now().UTC().Add(-1 * time.Minute)
+	job.NextRunAt = &past
+	if err := env.store.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+
+	orch := env.newOrchestrator(t)
+	startCtx, cancel := context.WithCancel(ctx)
+	if err := orch.Start(startCtx); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "job sub-002 reaches StateRemoteActive", 5*time.Second, func() bool {
+		got, _ := env.store.GetJobByID(ctx, "sub-002")
+		return got != nil && got.State == store.StateRemoteActive
+	})
+	cancel()
+	orch.Wait()
+
+	got, err := env.store.GetJobByID(ctx, "sub-002")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DisplayName != "Conan O'Brien Must Go S02" {
+		t.Errorf("DisplayName = %q, want the magnet dn kept", got.DisplayName)
 	}
 }
 

@@ -78,9 +78,7 @@ func (o *Orchestrator) processSubmitJob(ctx context.Context, job *store.Job) err
 	job.QueuedID = ptr(strings.TrimSpace(resp.QueuedID))
 	job.QueueAuthID = ptr(strings.TrimSpace(resp.QueueAuthID))
 	job.RemoteHash = ptr(strings.TrimSpace(resp.RemoteHash))
-	if strings.TrimSpace(resp.DisplayName) != "" {
-		job.DisplayName = strings.TrimSpace(resp.DisplayName)
-	}
+	takeRemoteName(job, resp.DisplayName)
 	if job.RemoteID == nil && job.QueuedID == nil && job.QueueAuthID == nil && job.RemoteHash == nil {
 		return o.handleSubmitFailure(ctx, job, torbox.MarkRetryable(fmt.Errorf("torbox create returned no remote id or queue tracking identifiers")))
 	}
