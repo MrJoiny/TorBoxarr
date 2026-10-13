@@ -19,7 +19,8 @@ const (
 )
 
 type Config struct {
-	Server struct {
+	UpstreamRemove bool
+	Server         struct {
 		Address string
 		BaseURL string
 	}
@@ -152,6 +153,9 @@ func (c *Config) applyDerived() {
 }
 
 func applyEnv(cfg *Config) {
+	if value := strings.TrimSpace(os.Getenv("TORBOXARR_UPSTREAM_REMOVE")); value != "" {
+		cfg.UpstreamRemove, _ = strconv.ParseBool(value)
+	}
 	setString := func(ptr *string, key string) {
 		if v := strings.TrimSpace(os.Getenv(key)); v != "" {
 			*ptr = v

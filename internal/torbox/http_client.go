@@ -4,10 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -51,7 +51,7 @@ func (c *HTTPClient) do(ctx context.Context, method, path string, body io.Reader
 	started := time.Now()
 	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, body)
 	if err != nil {
-		return nil, fmt.Errorf("new request: %w", err)
+		return nil, &RequestNotSentError{Err: fmt.Errorf("new request: %w", err)}
 	}
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
@@ -65,16 +65,15 @@ func (c *HTTPClient) do(ctx context.Context, method, path string, body io.Reader
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		c.warn("torbox http request failed", "method", method, "path", sanitizeLoggedPath(path), "duration", time.Since(started).String(), "error", err.Error())
-		if isNetRetryable(err) {
-			return nil, MarkRetryable(fmt.Errorf("torbox request failed: %w", err))
-		}
-		return nil, fmt.Errorf("torbox request failed: %w", err)
+		// Once Do is called, delivery is uncertain even when the returned error
+		// is not a net.Error (for example context cancellation after headers).
+		return nil, MarkRetryable(fmt.Errorf("torbox request failed: %w", err))
 	}
 	defer resp.Body.Close()
 
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("read response: %w", err)
+		return nil, MarkRetryable(fmt.Errorf("read response: %w", err))
 	}
 	c.debug("torbox http response",
 		"method", method,
@@ -84,11 +83,30 @@ func (c *HTTPClient) do(ctx context.Context, method, path string, body io.Reader
 		"response_bytes", len(raw),
 	)
 
-	if resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
-		return nil, MarkRetryable(fmt.Errorf("torbox status %d: %s", resp.StatusCode, strings.TrimSpace(string(raw))))
+	if resp.StatusCode == http.StatusRequestTimeout || resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone || resp.StatusCode == http.StatusTooManyRequests || resp.StatusCode >= 500 {
+		// TorBox frequently returns 500 with a structured error body
+		// (e.g. {"success":false,"error":"DATABASE_ERROR",...}) for a task that
+		// does not exist or is otherwise unrecoverable. Surface that as a
+		// logical error so callers can distinguish it from a transport-level
+		// failure, but it is still subject to retry/escalation caps.
+		var env apiEnvelope
+		if resp.StatusCode >= 500 && len(bytes.TrimSpace(raw)) > 0 && json.Unmarshal(raw, &env) == nil && !env.Success {
+			err := classifyEnvelopeError(&env, resp.StatusCode)
+			if IsTorboxLogical(err) {
+				return nil, MarkRetryable(err)
+			}
+			return nil, err
+		}
+		return nil, MarkRetryable(&HTTPStatusError{
+			StatusCode: resp.StatusCode,
+			Message:    fmt.Sprintf("torbox status %d: %s", resp.StatusCode, strings.TrimSpace(string(raw))),
+		})
 	}
 	if resp.StatusCode >= 400 {
-		return nil, fmt.Errorf("torbox status %d: %s", resp.StatusCode, strings.TrimSpace(string(raw)))
+		return nil, &HTTPStatusError{
+			StatusCode: resp.StatusCode,
+			Message:    fmt.Sprintf("torbox status %d: %s", resp.StatusCode, strings.TrimSpace(string(raw))),
+		}
 	}
 
 	var env apiEnvelope
@@ -96,12 +114,30 @@ func (c *HTTPClient) do(ctx context.Context, method, path string, body io.Reader
 		return &env, nil
 	}
 	if err := json.Unmarshal(raw, &env); err != nil {
-		return nil, fmt.Errorf("decode response envelope: %w", err)
+		return nil, MarkRetryable(fmt.Errorf("decode response envelope: %w", err))
 	}
-	if !env.Success && env.Error != nil {
-		return nil, fmt.Errorf("torbox api error: %v (%s)", env.Error, env.Detail)
+	if !env.Success {
+		return nil, classifyEnvelopeError(&env, resp.StatusCode)
 	}
 	return &env, nil
+}
+
+func classifyEnvelopeError(env *apiEnvelope, status int) error {
+	code := strings.ToUpper(strings.TrimSpace(stringify(env.Error)))
+	message := "torbox api returned success=false"
+	if code != "" || env.Detail != "" {
+		message = fmt.Sprintf("torbox api error: %s (%s)", code, env.Detail)
+	}
+	switch code {
+	case "ITEM_NOT_FOUND":
+		return &ErrTorboxAbsent{Err: errors.New(message)}
+	case "BAD_TOKEN":
+		return &HTTPStatusError{StatusCode: http.StatusUnauthorized, Message: message}
+	case "INVALID_OPTION", "MISSING_REQUIRED_OPTION":
+		return &HTTPStatusError{StatusCode: http.StatusBadRequest, Message: message}
+	default:
+		return &ErrTorboxLogical{Err: fmt.Errorf("torbox status %d: %s", status, message)}
+	}
 }
 
 func (c *HTTPClient) wait(ctx context.Context, limiter Waiter) error {
@@ -109,7 +145,7 @@ func (c *HTTPClient) wait(ctx context.Context, limiter Waiter) error {
 		return nil
 	}
 	if err := limiter.Wait(ctx); err != nil {
-		return fmt.Errorf("rate limiter wait: %w", err)
+		return &RequestNotSentError{Err: fmt.Errorf("rate limiter wait: %w", err)}
 	}
 	return nil
 }
@@ -137,14 +173,4 @@ func sanitizeLoggedPath(rawPath string) string {
 	}
 	parsed.RawQuery = query.Encode()
 	return parsed.String()
-}
-
-func isNetRetryable(err error) bool {
-	if err == nil {
-		return false
-	}
-	if ne, ok := err.(net.Error); ok && ne.Timeout() {
-		return true
-	}
-	return strings.Contains(strings.ToLower(err.Error()), "timeout")
 }

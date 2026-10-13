@@ -39,12 +39,36 @@ func (o *Orchestrator) runDownloader(ctx context.Context) error {
 		o.log.Debug("downloader fetched jobs", "count", len(jobs))
 	}
 	for _, job := range jobs {
-		if err := o.processDownloadJob(ctx, job); err != nil {
+		if err := o.downloadUntilRemoval(ctx, job); err != nil {
 			o.log.Error("download job failed", "job_id", job.ID, "error", err)
 		}
 		o.releaseJobClaim(ctx, "downloader", job.ID)
 	}
 	return nil
+}
+
+func (o *Orchestrator) downloadUntilRemoval(ctx context.Context, job *store.Job) error {
+	ctx, cancel := context.WithCancel(ctx)
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		ticker := time.NewTicker(min(max(o.cfg.Workers.DownloadInterval, time.Millisecond), time.Second))
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				current, err := o.store.GetJobByID(ctx, job.ID)
+				if err == nil && (current == nil || current.DeleteRequested || current.State == store.StateRemovePending || current.State == store.StateRemoved) {
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	defer func() { cancel(); <-finished }()
+	return o.processDownloadJob(ctx, job)
 }
 
 func (o *Orchestrator) processDownloadJob(ctx context.Context, job *store.Job) error {

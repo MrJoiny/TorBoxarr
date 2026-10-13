@@ -62,6 +62,7 @@ Optional overrides:
 | `TORBOXARR_DATABASE_PATH` | `/config/torboxarr.db` | SQLite database path; the container stores state under `/config` |
 | `TORBOXARR_LOG_LEVEL` | `INFO` | Log verbosity: DEBUG, INFO, WARN, or ERROR |
 | `TORBOXARR_SAB_NZB_KEY` | falls back to `TORBOXARR_SAB_API_KEY` | Explicit key for the SABnzbd-compatible endpoint; omit it to reuse the SAB API key |
+| `TORBOXARR_UPSTREAM_REMOVE` | `false` | Also remove matching active and queued TorBox tasks when the client removes a job |
 
 Docker-specific runtime variables used by the bundled compose file. Set these to the same UID/GID that Sonarr and Radarr use on the host, so TorBoxarr can write to the same download and category folders:
 
@@ -69,6 +70,22 @@ Docker-specific runtime variables used by the bundled compose file. Set these to
 |---|---|---|
 | `PUID` | none | UID the container drops to before starting TorBoxarr; required for the bundled Docker setup |
 | `PGID` | none | GID the container drops to before starting TorBoxarr; required for the bundled Docker setup |
+
+### Upstream Removal
+
+By default, client removal only deletes local files and retains the TorBox task.
+Set `TORBOXARR_UPSTREAM_REMOVE=true` to also remove strongly matched active and
+queued torrent or Usenet tasks. Removal starts when Sonarr/Radarr or another
+client requests deletion, rather than when the local download finishes.
+
+Transient failures retry with exponential backoff, starting at the remover
+interval. Active and queued representations have separate limits of five
+delete attempts and five reconciliation failures. Local files remain while a
+retry is pending. Once those limits are reached, or deletion is rejected or
+cannot be identified safely, local cleanup proceeds and the removed job retains
+a warning for the normal retention period. Logs distinguish complete cleanup
+from `job removed locally; upstream cleanup incomplete`. Upstream tasks can
+remain after an incomplete outcome and may need manual removal.
 
 ### Connecting Sonarr/Radarr / Download Clients
 

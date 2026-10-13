@@ -201,12 +201,8 @@ func (s *Server) markRemovePending(ctx context.Context, publicID string) error {
 	if job.State == store.StateRemoved || job.State == store.StateRemovePending {
 		return nil
 	}
-	job.DeleteRequested = true
-	now := time.Now().UTC()
-	job.NextRunAt = &now
-	job.UpdatedAt = now
 	s.log.Info("job marked for removal", "job_id", job.ID, "public_id", job.PublicID, "state", job.State)
-	return s.store.UpdateJobState(ctx, job, store.StateRemovePending, "remove requested via Arr-compatible API")
+	return s.store.MarkJobRemovePending(ctx, job.ID)
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

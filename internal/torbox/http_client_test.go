@@ -1,8 +1,11 @@
 package torbox_test
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -540,5 +543,326 @@ func TestRequestDownloadLink_IncludesToken(t *testing.T) {
 	}
 	if gotToken != "test-token" {
 		t.Errorf("token = %q, want %q", gotToken, "test-token")
+	}
+}
+
+func TestDeleteQueuedTask_RequestContract(t *testing.T) {
+	for _, sourceType := range []string{"torrent", "nzb"} {
+		t.Run(sourceType, func(t *testing.T) {
+			client, _ := newTestHTTPClient(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost {
+					t.Errorf("method = %s, want POST", r.Method)
+				}
+				if r.URL.Path != "/api/queued/controlqueued" {
+					t.Errorf("path = %q, want /api/queued/controlqueued", r.URL.Path)
+				}
+				if got := r.Header.Get("Authorization"); got != "Bearer test-token" {
+					t.Errorf("authorization = %q, want bearer token", got)
+				}
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatalf("read body: %v", err)
+				}
+				var payload map[string]any
+				if err := json.Unmarshal(body, &payload); err != nil {
+					t.Fatalf("decode body %q: %v", body, err)
+				}
+				if payload["operation"] != "delete" {
+					t.Errorf("operation = %v, want delete", payload["operation"])
+				}
+				if got, ok := payload["queued_id"].(float64); !ok || got != 42 {
+					t.Errorf("queued_id = %#v, want JSON number 42", payload["queued_id"])
+				}
+				if _, ok := payload["all"]; ok {
+					t.Error("queued delete must not include account-wide all option")
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write(jsonEnvelope(nil))
+			})
+
+			if err := client.DeleteQueuedTask(t.Context(), sourceType, "42"); err != nil {
+				t.Fatalf("DeleteQueuedTask: %v", err)
+			}
+		})
+	}
+}
+
+func TestDeleteTask_RequestContractUsesNumericIDs(t *testing.T) {
+	tests := []struct {
+		name       string
+		sourceType string
+		path       string
+		field      string
+	}{
+		{name: "torrent", sourceType: "torrent", path: "/api/torrents/controltorrent", field: "torrent_id"},
+		{name: "usenet", sourceType: "nzb", path: "/api/usenet/controlusenetdownload", field: "usenet_id"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client, _ := newTestHTTPClient(t, func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path != test.path {
+					t.Errorf("path = %q, want %q", r.URL.Path, test.path)
+				}
+				body, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if bytes.Contains(body, []byte(`"`+test.field+`":"`)) {
+					t.Errorf("%s must be sent as a JSON number: %s", test.field, body)
+				}
+				var payload map[string]any
+				if err := json.Unmarshal(body, &payload); err != nil {
+					t.Fatal(err)
+				}
+				if got, ok := payload[test.field].(float64); !ok || got != 77 {
+					t.Errorf("%s = %#v, want JSON number 77", test.field, payload[test.field])
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write(jsonEnvelope(nil))
+			})
+
+			if err := client.DeleteTask(t.Context(), test.sourceType, "77"); err != nil {
+				t.Fatalf("DeleteTask: %v", err)
+			}
+		})
+	}
+}
+
+func TestDeleteOperationsRejectInvalidIDsWithoutHTTP(t *testing.T) {
+	var calls int
+	client, _ := newTestHTTPClient(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(jsonEnvelope(nil))
+	})
+
+	for _, id := range []string{"", "-1", "not-a-number"} {
+		if err := client.DeleteTask(t.Context(), "torrent", id); err == nil {
+			t.Errorf("DeleteTask(%q) returned nil", id)
+		}
+		if err := client.DeleteQueuedTask(t.Context(), "torrent", id); err == nil {
+			t.Errorf("DeleteQueuedTask(%q) returned nil", id)
+		}
+	}
+	if calls != 0 {
+		t.Fatalf("invalid IDs caused %d HTTP calls, want 0", calls)
+	}
+}
+
+func TestDeleteTaskCanceledBeforeLimiterDoesNotSend(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		calls++
+	}))
+	t.Cleanup(server.Close)
+
+	bucket := torbox.NewTokenBucket(1, time.Hour)
+	t.Cleanup(bucket.Stop)
+	if err := bucket.Wait(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	client := torbox.NewHTTPClient(nil, server.URL, "test-token", "test-agent", 10*time.Second, nil, bucket, nil)
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	err := client.DeleteTask(ctx, "torrent", "42")
+	if !torbox.IsRequestNotSent(err) {
+		t.Fatalf("DeleteTask error = %v, want RequestNotSentError", err)
+	}
+	if !torbox.IsRetryable(err) {
+		t.Fatalf("DeleteTask error = %v, want retryable for non-removal callers", err)
+	}
+	if calls != 0 {
+		t.Fatalf("canceled limiter caused %d HTTP calls, want 0", calls)
+	}
+}
+
+func TestHTTPErrorClassification(t *testing.T) {
+	tests := []struct {
+		name      string
+		status    int
+		body      string
+		retryable bool
+		logical   bool
+	}{
+		{name: "structured 500", status: http.StatusInternalServerError, body: `{"success":false,"error":"DATABASE_ERROR"}`, retryable: true, logical: true},
+		{name: "plain 500", status: http.StatusInternalServerError, body: "outage", retryable: true},
+		{name: "request timeout", status: http.StatusRequestTimeout, body: "timeout", retryable: true},
+		{name: "structured 429", status: http.StatusTooManyRequests, body: `{"success":false,"error":"RATE_LIMIT"}`, retryable: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client, _ := newTestHTTPClient(t, func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(test.status)
+				_, _ = w.Write([]byte(test.body))
+			})
+			_, err := client.GetTaskStatus(t.Context(), "torrent", "1")
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if got := torbox.IsRetryable(err); got != test.retryable {
+				t.Errorf("retryable = %v, want %v", got, test.retryable)
+			}
+			if got := torbox.IsTorboxLogical(err); got != test.logical {
+				t.Errorf("logical = %v, want %v", got, test.logical)
+			}
+		})
+	}
+}
+
+func TestStructuredErrorSemanticClassification(t *testing.T) {
+	tests := []struct {
+		code        string
+		wantAbsent  bool
+		wantStatus  int
+		wantLogical bool
+	}{
+		{code: "ITEM_NOT_FOUND", wantAbsent: true},
+		{code: "INVALID_OPTION", wantStatus: http.StatusBadRequest},
+		{code: "MISSING_REQUIRED_OPTION", wantStatus: http.StatusBadRequest},
+		{code: "BAD_TOKEN", wantStatus: http.StatusUnauthorized},
+		{code: "DATABASE_ERROR", wantLogical: true},
+		{code: "UNKNOWN_ERROR", wantLogical: true},
+	}
+	for _, test := range tests {
+		t.Run(test.code, func(t *testing.T) {
+			client, _ := newTestHTTPClient(t, func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = fmt.Fprintf(w, `{"success":false,"error":%q}`, test.code)
+			})
+			err := client.DeleteTask(t.Context(), "torrent", "1")
+			if got := torbox.IsTorboxAbsent(err); got != test.wantAbsent {
+				t.Fatalf("absent = %v, want %v; err = %v", got, test.wantAbsent, err)
+			}
+			if test.wantStatus != 0 && !torbox.IsHTTPStatus(err, test.wantStatus) {
+				t.Fatalf("error = %v, want HTTP status %d", err, test.wantStatus)
+			}
+			if got := torbox.IsTorboxLogical(err); got != test.wantLogical {
+				t.Fatalf("logical = %v, want %v; err = %v", got, test.wantLogical, err)
+			}
+		})
+	}
+}
+
+func TestDeleteTaskGenericNotFoundIsNotAbsence(t *testing.T) {
+	client, _ := newTestHTTPClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte("endpoint not found"))
+	})
+	if err := client.DeleteTask(t.Context(), "torrent", "1"); err == nil || torbox.IsTorboxAbsent(err) {
+		t.Fatalf("DeleteTask error = %v, want non-absence error", err)
+	} else if !torbox.IsRetryable(err) {
+		t.Fatalf("DeleteTask error = %v, want retryable uncertainty", err)
+	}
+	if err := client.DeleteQueuedTask(t.Context(), "torrent", "1"); err == nil || torbox.IsTorboxAbsent(err) {
+		t.Fatalf("DeleteQueuedTask error = %v, want non-absence error", err)
+	} else if !torbox.IsRetryable(err) {
+		t.Fatalf("DeleteQueuedTask error = %v, want retryable uncertainty", err)
+	}
+}
+
+func TestFindActiveTaskByIdentityRefreshesStaleID(t *testing.T) {
+	var calls int
+	client, _ := newTestHTTPClient(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("id") != "" {
+			_, _ = w.Write(jsonEnvelope([]map[string]any{}))
+			return
+		}
+		_, _ = w.Write(jsonEnvelope([]map[string]any{{
+			"torrent_id": "123",
+			"queued_id":  "42",
+			"hash":       "exact-hash",
+			"name":       "Recovered task",
+		}}))
+	})
+
+	status, err := client.FindActiveTaskByIdentity(t.Context(), "torrent", "999", "42", "", "exact-hash")
+	if err != nil {
+		t.Fatalf("FindActiveTaskByIdentity: %v", err)
+	}
+	if status == nil || status.RemoteID != "123" {
+		t.Fatalf("status = %#v, want refreshed remote id 123", status)
+	}
+	if calls != 2 {
+		t.Fatalf("lookup calls = %d, want stale-id lookup plus full-list fallback", calls)
+	}
+}
+
+func TestFindQueuedTaskRefreshesStaleID(t *testing.T) {
+	var calls int
+	client, _ := newTestHTTPClient(t, func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("id") != "" {
+			_, _ = w.Write(jsonEnvelope([]map[string]any{}))
+			return
+		}
+		_, _ = w.Write(jsonEnvelope([]map[string]any{{
+			"id":   "321",
+			"hash": "exact-hash",
+			"name": "Recovered queued task",
+		}}))
+	})
+
+	status, err := client.FindQueuedTask(t.Context(), "torrent", "999", "", "exact-hash")
+	if err != nil {
+		t.Fatalf("FindQueuedTask: %v", err)
+	}
+	if status == nil || status.QueuedID != "321" {
+		t.Fatalf("status = %#v, want refreshed queue id 321", status)
+	}
+	if calls != 2 {
+		t.Fatalf("lookup calls = %d, want stale-id lookup plus full-list fallback", calls)
+	}
+}
+
+func TestGetQueuedStatusPreservesExplicitActiveID(t *testing.T) {
+	client, _ := newTestHTTPClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(jsonEnvelope(map[string]any{
+			"id":         42,
+			"torrent_id": 99,
+			"hash":       "exact-hash",
+		}))
+	})
+
+	status, err := client.GetQueuedStatus(t.Context(), "torrent", "42")
+	if err != nil {
+		t.Fatalf("GetQueuedStatus: %v", err)
+	}
+	if status == nil || status.QueuedID != "42" || status.RemoteID != "99" {
+		t.Fatalf("status = %#v, want queued id 42 and explicit active id 99", status)
+	}
+}
+
+func TestGetQueuedStatusDoesNotTreatGenericIDAsActive(t *testing.T) {
+	client, _ := newTestHTTPClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(jsonEnvelope(map[string]any{"id": 42}))
+	})
+
+	status, err := client.GetQueuedStatus(t.Context(), "torrent", "42")
+	if err != nil {
+		t.Fatalf("GetQueuedStatus: %v", err)
+	}
+	if status == nil || status.QueuedID != "42" || status.RemoteID != "" {
+		t.Fatalf("status = %#v, want queue-only id 42", status)
+	}
+}
+
+func TestFindActiveTaskRejectsHashConflict(t *testing.T) {
+	client, _ := newTestHTTPClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(jsonEnvelope(map[string]any{
+			"torrent_id": "123",
+			"hash":       "different-hash",
+		}))
+	})
+
+	_, err := client.FindActiveTaskByIdentity(t.Context(), "torrent", "123", "", "", "expected-hash")
+	if !torbox.IsTorboxIdentityConflict(err) {
+		t.Fatalf("error = %v, want identity conflict", err)
 	}
 }

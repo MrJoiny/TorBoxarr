@@ -43,19 +43,42 @@ func (s JobState) Closed() bool {
 	}
 }
 
+type UpstreamRemovalProgress struct {
+	Attempts               int        `json:"attempts,omitempty"`
+	ReconciliationFailures int        `json:"reconciliation_failures,omitempty"`
+	CompletedAt            *time.Time `json:"completed_at,omitempty"`
+	Outcome                string     `json:"outcome,omitempty"`
+	LastError              string     `json:"last_error,omitempty"`
+}
+
+const (
+	UpstreamRemovalDeleted        = "deleted"
+	UpstreamRemovalAbsent         = "absent"
+	UpstreamRemovalRejected       = "rejected"
+	UpstreamRemovalExhausted      = "exhausted"
+	UpstreamRemovalUnidentifiable = "unidentifiable"
+)
+
+func (p UpstreamRemovalProgress) Terminal() bool {
+	return p.Outcome != ""
+}
+
 type SubmissionMetadata struct {
-	SavePath         string   `json:"save_path,omitempty"`
-	Rename           string   `json:"rename,omitempty"`
-	Tags             []string `json:"tags,omitempty"`
-	SkipChecking     bool     `json:"skip_checking,omitempty"`
-	Paused           bool     `json:"paused,omitempty"`
-	RootFolder       bool     `json:"root_folder,omitempty"`
-	Password         string   `json:"password,omitempty"`
-	PostProcessing   int      `json:"post_processing,omitempty"`
-	AsQueued         bool     `json:"as_queued,omitempty"`
-	AddOnlyIfCached  bool     `json:"add_only_if_cached,omitempty"`
-	UploadedFilename string   `json:"uploaded_filename,omitempty"`
-	OriginalFilename string   `json:"original_filename,omitempty"`
+	SavePath               string                  `json:"save_path,omitempty"`
+	Rename                 string                  `json:"rename,omitempty"`
+	Tags                   []string                `json:"tags,omitempty"`
+	SkipChecking           bool                    `json:"skip_checking,omitempty"`
+	Paused                 bool                    `json:"paused,omitempty"`
+	RootFolder             bool                    `json:"root_folder,omitempty"`
+	Password               string                  `json:"password,omitempty"`
+	PostProcessing         int                     `json:"post_processing,omitempty"`
+	AsQueued               bool                    `json:"as_queued,omitempty"`
+	AddOnlyIfCached        bool                    `json:"add_only_if_cached,omitempty"`
+	UploadedFilename       string                  `json:"uploaded_filename,omitempty"`
+	OriginalFilename       string                  `json:"original_filename,omitempty"`
+	UpstreamDeleteAttempts int                     `json:"upstream_delete_attempts,omitempty"`
+	ActiveRemoval          UpstreamRemovalProgress `json:"active_removal,omitempty"`
+	QueuedRemoval          UpstreamRemovalProgress `json:"queued_removal,omitempty"`
 }
 
 type Job struct {

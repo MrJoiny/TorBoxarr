@@ -18,6 +18,19 @@ func TestValidateRejectsPlaceholderSecrets(t *testing.T) {
 	}
 }
 
+func TestUpstreamRemoveIsOptIn(t *testing.T) {
+	for _, value := range []string{"", "false", "true", "invalid"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("TORBOXARR_UPSTREAM_REMOVE", value)
+			cfg := defaultConfig()
+			applyEnv(&cfg)
+			if cfg.UpstreamRemove != (value == "true") {
+				t.Fatalf("upstream removal = %v for %q", cfg.UpstreamRemove, value)
+			}
+		})
+	}
+}
+
 func TestApplyEnvUsesMinimalSurface(t *testing.T) {
 	cfg := defaultConfig()
 

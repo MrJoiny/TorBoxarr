@@ -30,19 +30,19 @@ type workerEnv struct {
 func newWorkerEnv(t *testing.T) *workerEnv {
 	t.Helper()
 	ctx := context.Background()
+	tmpDir := t.TempDir()
 
-	db, err := store.Open(ctx, ":memory:", 5*time.Second)
+	// Cancellation can discard a connection; keep the fixture database on disk.
+	db, err := store.Open(ctx, filepath.Join(tmpDir, "torboxarr.db"), 5*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
-	db.SetMaxOpenConns(1) // :memory: creates a separate DB per connection
 	if err := store.RunMigrationsFS(db, store.EmbeddedMigrations); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
 	st := store.New(db)
 
-	tmpDir := t.TempDir()
 	layout := files.NewLayout(
 		tmpDir,
 		filepath.Join(tmpDir, "staging"),
@@ -72,7 +72,7 @@ func workerConfig(tmpDir string) *config.Config {
 	cfg.Server.Address = ":0"
 	cfg.Server.BaseURL = "http://localhost"
 	cfg.Logging.Level = "ERROR"
-	cfg.Database.Path = ":memory:"
+	cfg.Database.Path = filepath.Join(tmpDir, "torboxarr.db")
 	cfg.Database.BusyTimeout = 5 * time.Second
 	cfg.Data.Root = tmpDir
 	cfg.Data.Staging = filepath.Join(tmpDir, "staging")
@@ -603,6 +603,7 @@ func TestProgressBytes_ZeroStaysZero(t *testing.T) {
 	}
 
 	job := makeWorkerJob("zero-001", "pub-zero-001", store.StateRemoteActive, store.SourceTypeTorrent)
+	initialUpdatedAt := job.UpdatedAt
 	job.RemoteID = strPtr("remote-zero-001")
 	past := time.Now().UTC().Add(-1 * time.Minute)
 	job.NextRunAt = &past
@@ -618,7 +619,7 @@ func TestProgressBytes_ZeroStaysZero(t *testing.T) {
 	// Zero bytes: just wait for the poller to have processed (UpdatedAt changes)
 	waitFor(t, "job zero-001 processed by poller", 5*time.Second, func() bool {
 		got, _ := env.store.GetJobByID(ctx, "zero-001")
-		return got != nil && got.UpdatedAt.After(past)
+		return got != nil && got.UpdatedAt.After(initialUpdatedAt)
 	})
 	cancel()
 	orch.Wait()
