@@ -86,14 +86,14 @@ func TestShouldCheckpointProgress(t *testing.T) {
 	}
 }
 
-func TestReset5xxCount(t *testing.T) {
+func TestResetDownloadStatusRetries(t *testing.T) {
 	job := &store.Job{RetryCount: 2}
-	reset5xxCount(job, 10, 10)
+	resetDownloadStatusRetries(job, 10, 10)
 	if job.RetryCount != 2 {
 		t.Fatalf("RetryCount = %d, want 2 without progress", job.RetryCount)
 	}
 
-	reset5xxCount(job, 10, 20)
+	resetDownloadStatusRetries(job, 10, 20)
 	if job.RetryCount != 0 {
 		t.Fatalf("RetryCount = %d, want 0 after progress", job.RetryCount)
 	}

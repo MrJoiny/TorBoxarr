@@ -18,6 +18,19 @@ func TestValidateRejectsPlaceholderSecrets(t *testing.T) {
 	}
 }
 
+func TestUpstreamRemoveIsOptIn(t *testing.T) {
+	for _, value := range []string{"", "false", "true", "invalid"} {
+		t.Run(value, func(t *testing.T) {
+			t.Setenv("TORBOXARR_UPSTREAM_REMOVE", value)
+			cfg := defaultConfig()
+			applyEnv(&cfg)
+			if cfg.UpstreamRemove != (value == "true") {
+				t.Fatalf("upstream removal = %v for %q", cfg.UpstreamRemove, value)
+			}
+		})
+	}
+}
+
 func TestApplyEnvUsesMinimalSurface(t *testing.T) {
 	cfg := defaultConfig()
 
@@ -105,6 +118,16 @@ func TestDefaultConfigKeepsTorBoxCreateHourlyLimit(t *testing.T) {
 
 	if cfg.TorBox.CreatePerHour != 60 {
 		t.Fatalf("TorBox.CreatePerHour = %d, want 60", cfg.TorBox.CreatePerHour)
+	}
+}
+
+func TestApplyEnvReadsRemoteAbsenceAttempts(t *testing.T) {
+	cfg := defaultConfig()
+	t.Setenv("TORBOXARR_REMOTE_ABSENCE_ATTEMPTS", "9")
+
+	applyEnv(&cfg)
+	if cfg.Workers.RemoteAbsenceAttempts != 9 {
+		t.Fatalf("RemoteAbsenceAttempts = %d, want 9", cfg.Workers.RemoteAbsenceAttempts)
 	}
 }
 

@@ -2,6 +2,7 @@ package files
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -21,7 +22,10 @@ type RangeDownloader struct {
 	client       *http.Client
 	notifyEvery  int64
 	writeBufSize int
+	idleTimeout  time.Duration
 }
+
+var ErrDownloadIdleTimeout = errors.New("download made no progress before idle timeout")
 
 type HTTPStatusError struct {
 	StatusCode int
@@ -34,6 +38,7 @@ func (e *HTTPStatusError) Error() string {
 const (
 	downloadNotifyEvery  = 1 << 20
 	downloadWriteBufSize = 8 << 20
+	downloadIdleTimeout  = 2 * time.Minute
 )
 
 func NewRangeDownloader(log *slog.Logger, timeout time.Duration) *RangeDownloader {
@@ -42,10 +47,16 @@ func NewRangeDownloader(log *slog.Logger, timeout time.Duration) *RangeDownloade
 		client:       &http.Client{Timeout: timeout},
 		notifyEvery:  downloadNotifyEvery,
 		writeBufSize: downloadWriteBufSize,
+		idleTimeout:  downloadIdleTimeout,
 	}
 }
 
 func (d *RangeDownloader) Download(ctx context.Context, part *store.TransferPart, progress func(done, total int64) error) error {
+	// Bound idle requests without imposing a duration limit on large downloads.
+	ctx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	idleTimer := time.AfterFunc(d.idleTimeout, func() { cancel(ErrDownloadIdleTimeout) })
+	defer idleTimer.Stop()
 	d.debug("starting range download", "part_key", part.PartKey, "temp_path", part.TempPath, "source_url", sanitizeDownloadURL(part.SourceURL))
 	if err := os.MkdirAll(filepath.Dir(part.TempPath), 0o755); err != nil {
 		return fmt.Errorf("ensure part directory: %w", err)
@@ -69,6 +80,9 @@ func (d *RangeDownloader) Download(ctx context.Context, part *store.TransferPart
 
 	resp, err := d.client.Do(req)
 	if err != nil {
+		if errors.Is(context.Cause(ctx), ErrDownloadIdleTimeout) {
+			return ErrDownloadIdleTimeout
+		}
 		return fmt.Errorf("download part: %w", err)
 	}
 	defer resp.Body.Close()
@@ -120,6 +134,7 @@ func (d *RangeDownloader) Download(ctx context.Context, part *store.TransferPart
 	for {
 		n, readErr := resp.Body.Read(buf)
 		if n > 0 {
+			idleTimer.Reset(d.idleTimeout)
 			if _, err := file.Write(buf[:n]); err != nil {
 				return fmt.Errorf("write temp file: %w", err)
 			}
@@ -137,6 +152,9 @@ func (d *RangeDownloader) Download(ctx context.Context, part *store.TransferPart
 		if readErr != nil {
 			if readErr == io.EOF {
 				break
+			}
+			if errors.Is(context.Cause(ctx), ErrDownloadIdleTimeout) {
+				return ErrDownloadIdleTimeout
 			}
 			return fmt.Errorf("read response body: %w", readErr)
 		}

@@ -174,17 +174,93 @@ func (s *Store) CreateJob(ctx context.Context, job *Job) error {
 }
 
 func (s *Store) UpdateJob(ctx context.Context, job *Job) error {
+	if job.State == StateRemovePending {
+		if current, err := s.GetJobByID(ctx, job.ID); err != nil {
+			return err
+		} else if current != nil && current.State == StateRemovePending {
+			mergeRemovalProgress(&job.Metadata.ActiveRemoval, current.Metadata.ActiveRemoval)
+			mergeRemovalProgress(&job.Metadata.QueuedRemoval, current.Metadata.QueuedRemoval)
+		}
+	}
+	_, err := s.updateJob(ctx, job, "", nil)
+	return err
+}
+
+func mergeRemovalProgress(next *UpstreamRemovalProgress, current UpstreamRemovalProgress) {
+	// Queue promotion can invalidate an earlier active-absence observation.
+	if current.Terminal() && (current.Outcome != UpstreamRemovalAbsent || next.Outcome == UpstreamRemovalAbsent) {
+		*next = current
+		return
+	}
+	if next.Attempts < current.Attempts {
+		next.Attempts = current.Attempts
+	}
+	if next.ReconciliationFailures < current.ReconciliationFailures {
+		next.ReconciliationFailures = current.ReconciliationFailures
+	}
+	if next.LastError == "" {
+		next.LastError = current.LastError
+	}
+}
+
+// UpdateJobIfState persists a job only while it remains in expectedState and
+// has not been claimed for removal. This prevents an in-flight remote poll
+// from overwriting a concurrent remove request.
+func (s *Store) UpdateJobIfState(ctx context.Context, job *Job, expectedState JobState) (bool, error) {
+	affected, err := s.updateJob(ctx, job, " AND state = ? AND delete_requested = 0", []any{string(expectedState)})
+	return affected == 1, err
+}
+
+// UpdateJobStateIfCurrent changes state only if the job is still in
+// expectedState and has not been claimed for removal.
+func (s *Store) UpdateJobStateIfCurrent(ctx context.Context, job *Job, expectedState, next JobState, message string) (bool, error) {
+	previous := job.State
+	job.State = next
+	job.UpdatedAt = s.now()
+	affected, err := s.updateJob(ctx, job, " AND state = ? AND delete_requested = 0", []any{string(expectedState)})
+	if err != nil {
+		job.State = previous
+		return false, err
+	}
+	if affected != 1 {
+		job.State = previous
+		return false, s.mergeRemovalDiscoveries(ctx, job)
+	}
+	if err := s.AppendEvent(ctx, job.ID, &previous, &next, message); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (s *Store) mergeRemovalDiscoveries(ctx context.Context, job *Job) error {
+	_, err := s.execWrite(ctx, `
+        UPDATE jobs SET remote_id = COALESCE(NULLIF(?, ''), remote_id),
+            queued_id = COALESCE(NULLIF(?, ''), queued_id),
+            queue_auth_id = COALESCE(NULLIF(?, ''), queue_auth_id),
+            remote_hash = COALESCE(NULLIF(?, ''), remote_hash),
+            completed_path = COALESCE(NULLIF(?, ''), completed_path)
+        WHERE id = ? AND state = 'remove_pending'
+    `, nullableString(job.RemoteID), nullableString(job.QueuedID), nullableString(job.QueueAuthID),
+		nullableString(job.RemoteHash), nullableString(job.CompletedPath), job.ID)
+	return err
+}
+
+func (s *Store) updateJob(ctx context.Context, job *Job, where string, whereArgs []any) (int64, error) {
 	metadataJSON, err := json.Marshal(job.Metadata)
 	if err != nil {
-		return fmt.Errorf("marshal metadata: %w", err)
+		return 0, fmt.Errorf("marshal metadata: %w", err)
 	}
 
-	_, err = s.execWrite(ctx, `
+	query := `
         UPDATE jobs
         SET source_type = ?,
             client_kind = ?,
             category = ?,
-            state = ?,
+            state = CASE
+                WHEN state = 'removed' THEN 'removed'
+                WHEN delete_requested = 1 AND ? NOT IN ('remove_pending', 'removed') AND ? = 0 THEN 'remove_pending'
+                ELSE ?
+            END,
             submission_key = ?,
             remote_id = ?,
             queued_id = ?,
@@ -203,15 +279,21 @@ func (s *Store) UpdateJob(ctx context.Context, job *Job) error {
             next_run_at = ?,
             last_remote_status = ?,
             metadata_json = ?,
-            delete_requested = ?,
-            claimed_by = NULL,
-            claimed_at = NULL,
+            delete_requested = CASE WHEN delete_requested = 1 THEN 1 ELSE ? END,
             updated_at = ?
         WHERE id = ?
-    `,
+          AND (state != 'removed' OR ? IN ('removed'))
+          AND (
+              delete_requested = 0 OR
+              ? IN ('remove_pending', 'removed') OR
+              (? = 'failed' AND ? = 1)
+		  )` + where
+	args := []any{
 		string(job.SourceType),
 		string(job.ClientKind),
 		job.Category,
+		string(job.State),
+		boolToInt(job.DeleteRequested),
 		string(job.State),
 		job.SubmissionKey,
 		nullableString(job.RemoteID),
@@ -234,21 +316,87 @@ func (s *Store) UpdateJob(ctx context.Context, job *Job) error {
 		boolToInt(job.DeleteRequested),
 		formatTime(job.UpdatedAt),
 		job.ID,
-	)
-	if err != nil {
-		return fmt.Errorf("update job: %w", err)
+		string(job.State),
+		string(job.State),
+		string(job.State),
+		boolToInt(job.DeleteRequested),
 	}
-	return nil
+	args = append(args, whereArgs...)
+	result, err := s.execWrite(ctx, query, args...)
+	if err != nil {
+		return 0, fmt.Errorf("update job: %w", err)
+	}
+	affected, _ := result.RowsAffected()
+	return affected, nil
 }
 
 func (s *Store) UpdateJobState(ctx context.Context, job *Job, next JobState, message string) error {
 	prev := job.State
 	job.State = next
 	job.UpdatedAt = s.now()
-	if err := s.UpdateJob(ctx, job); err != nil {
+	affected, err := s.updateJob(ctx, job, "", nil)
+	if err != nil {
 		return err
 	}
+	if affected == 0 {
+		var persistedState string
+		if err := s.db.QueryRowContext(ctx, `SELECT state FROM jobs WHERE id = ?`, job.ID).Scan(&persistedState); err != nil {
+			return fmt.Errorf("read persisted job state: %w", err)
+		}
+		job.State = JobState(persistedState)
+		if job.State == StateRemovePending {
+			// A worker may finish an external create or local promotion after a
+			// removal request wins. Preserve only cleanup-critical discoveries;
+			// never let the stale worker revive or otherwise rewrite the job.
+			if _, err := s.execWrite(ctx, `
+                UPDATE jobs
+                SET remote_id = COALESCE(NULLIF(?, ''), remote_id),
+                    queued_id = COALESCE(NULLIF(?, ''), queued_id),
+                    queue_auth_id = COALESCE(NULLIF(?, ''), queue_auth_id),
+                    remote_hash = COALESCE(NULLIF(?, ''), remote_hash),
+                    completed_path = COALESCE(NULLIF(?, ''), completed_path),
+                    updated_at = ?
+                WHERE id = ? AND state = 'remove_pending'
+            `,
+				nullableString(job.RemoteID),
+				nullableString(job.QueuedID),
+				nullableString(job.QueueAuthID),
+				nullableString(job.RemoteHash),
+				nullableString(job.CompletedPath),
+				formatTime(s.now()),
+				job.ID,
+			); err != nil {
+				return fmt.Errorf("merge stale worker cleanup data: %w", err)
+			}
+		}
+		return nil
+	}
+	// A remove request can race with another worker that already loaded the
+	// job. UpdateJob's state guard keeps remove_pending authoritative; avoid
+	// emitting a misleading event when that guard wins.
 	return s.AppendEvent(ctx, job.ID, &prev, &next, message)
+}
+
+func (s *Store) MarkJobRemovePending(ctx context.Context, id string) error {
+	now := s.now()
+	result, err := s.execWrite(ctx, `
+        UPDATE jobs
+        SET state = 'remove_pending',
+            delete_requested = 1,
+            next_run_at = ?,
+            error_message = NULL,
+            updated_at = ?
+        WHERE id = ? AND state NOT IN ('remove_pending', 'removed')
+    `, formatTime(now), formatTime(now), id)
+	if err != nil {
+		return fmt.Errorf("mark job remove pending: %w", err)
+	}
+	affected, _ := result.RowsAffected()
+	if affected == 0 {
+		return nil
+	}
+	to := StateRemovePending
+	return s.AppendEvent(ctx, id, nil, &to, "remove requested via Arr-compatible API")
 }
 
 func (s *Store) AppendEvent(ctx context.Context, jobID string, from, to *JobState, message string) error {
@@ -367,6 +515,28 @@ func (s *Store) ListOpenJobs(ctx context.Context) ([]*Job, error) {
 	return scanJobs(rows)
 }
 
+// ListRemoteFailedWithQueueTracking returns historical failures that may have
+// been misclassified while a TorBox task was still queued.
+func (s *Store) ListRemoteFailedWithQueueTracking(ctx context.Context) ([]*Job, error) {
+	rows, err := s.db.QueryContext(ctx, `
+        SELECT `+jobColumns+`
+		FROM jobs
+		WHERE state = 'remote_failed'
+		  AND (queued_id IS NOT NULL OR queue_auth_id IS NOT NULL OR remote_hash IS NOT NULL)
+		  AND error_message IS NOT NULL
+		  AND (
+		      error_message LIKE 'poll failed after max attempts; upstream task unrecoverable%'
+		      OR error_message LIKE 'remote task not found in TorBox queue or active list%'
+		  )
+        ORDER BY updated_at ASC
+    `)
+	if err != nil {
+		return nil, fmt.Errorf("list remote failed queued jobs: %w", err)
+	}
+	defer rows.Close()
+	return scanJobs(rows)
+}
+
 // ClaimJobsDue atomically selects due jobs and marks them as claimed by a worker.
 // Only unclaimed jobs (claimed_by IS NULL) are selected, preventing concurrent processing.
 func (s *Store) ClaimJobsDue(ctx context.Context, workerID string, states []JobState, now time.Time, limit int) ([]*Job, error) {
@@ -454,11 +624,39 @@ func (s *Store) ReleaseJobClaim(ctx context.Context, jobID string) error {
 	return err
 }
 
+func (s *Store) ReleaseJobClaimOwned(ctx context.Context, jobID, owner string) error {
+	_, err := s.execWrite(ctx, `
+		UPDATE jobs SET claimed_by = NULL, claimed_at = NULL
+		WHERE id = ? AND claimed_by = ?
+	`, jobID, owner)
+	return err
+}
+
 // ReleaseAllClaims clears all outstanding claims. Used on startup to recover
 // from crashes that left jobs claimed by a previous process.
 func (s *Store) ReleaseAllClaims(ctx context.Context) error {
 	_, err := s.execWrite(ctx,
 		`UPDATE jobs SET claimed_by = NULL, claimed_at = NULL WHERE claimed_by IS NOT NULL`)
+	return err
+}
+
+// RecoverClaims releases ordinary worker claims immediately and remover claims
+// only after their conservative lease has expired.
+func (s *Store) RecoverClaims(ctx context.Context, removerCutoff time.Time) error {
+	_, err := s.execWrite(ctx, `
+		UPDATE jobs SET claimed_by = NULL, claimed_at = NULL
+		WHERE claimed_by IS NOT NULL
+		  AND (state != 'remove_pending' OR claimed_by NOT LIKE 'remover-%' OR claimed_at IS NULL OR claimed_at < ?)
+	`, formatTime(removerCutoff))
+	return err
+}
+
+func (s *Store) RecoverRemoverClaims(ctx context.Context, cutoff time.Time) error {
+	_, err := s.execWrite(ctx, `
+        UPDATE jobs SET claimed_by = NULL, claimed_at = NULL
+        WHERE state = 'remove_pending' AND claimed_by LIKE 'remover-%'
+          AND (claimed_at IS NULL OR claimed_at < ?)
+    `, formatTime(cutoff))
 	return err
 }
 
@@ -874,4 +1072,24 @@ func isSQLiteBusy(err error) bool {
 		strings.Contains(msg, "sqlite_locked") ||
 		strings.Contains(msg, "database is locked") ||
 		strings.Contains(msg, "database table is locked")
+}
+
+func (s *Store) ListRemoteFailed521(ctx context.Context) ([]*Job, error) {
+	rows, err := s.db.QueryContext(ctx, `
+        SELECT `+jobColumns+`
+        FROM jobs
+        WHERE state = 'remote_failed'
+          AND delete_requested = 0
+          AND error_message IS NOT NULL
+          AND (
+              error_message LIKE '%status 521%'
+              OR error_message LIKE '%HTTP 521%'
+          )
+        ORDER BY updated_at ASC
+    `)
+	if err != nil {
+		return nil, fmt.Errorf("list historical 521 failures: %w", err)
+	}
+	defer rows.Close()
+	return scanJobs(rows)
 }

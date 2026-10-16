@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -30,19 +31,19 @@ type workerEnv struct {
 func newWorkerEnv(t *testing.T) *workerEnv {
 	t.Helper()
 	ctx := context.Background()
+	tmpDir := t.TempDir()
 
-	db, err := store.Open(ctx, ":memory:", 5*time.Second)
+	// Cancellation can discard a connection; keep the fixture database on disk.
+	db, err := store.Open(ctx, filepath.Join(tmpDir, "torboxarr.db"), 5*time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
-	db.SetMaxOpenConns(1) // :memory: creates a separate DB per connection
 	if err := store.RunMigrationsFS(db, store.EmbeddedMigrations); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { db.Close() })
 	st := store.New(db)
 
-	tmpDir := t.TempDir()
 	layout := files.NewLayout(
 		tmpDir,
 		filepath.Join(tmpDir, "staging"),
@@ -72,7 +73,7 @@ func workerConfig(tmpDir string) *config.Config {
 	cfg.Server.Address = ":0"
 	cfg.Server.BaseURL = "http://localhost"
 	cfg.Logging.Level = "ERROR"
-	cfg.Database.Path = ":memory:"
+	cfg.Database.Path = filepath.Join(tmpDir, "torboxarr.db")
 	cfg.Database.BusyTimeout = 5 * time.Second
 	cfg.Data.Root = tmpDir
 	cfg.Data.Staging = filepath.Join(tmpDir, "staging")
@@ -396,6 +397,148 @@ func TestProcessSubmitJob_PermanentFailure(t *testing.T) {
 	orch.Wait()
 }
 
+func TestProcessSubmitJob_Torbox521SchedulesBoundedRetry(t *testing.T) {
+	env := newWorkerEnv(t)
+	ctx := context.Background()
+	env.mock.CreateTorrentTaskFn = func(context.Context, torbox.CreateTorrentTaskRequest) (*torbox.CreateTaskResponse, error) {
+		return nil, &torbox.HTTPStatusError{StatusCode: torbox.StatusTorboxOriginDown, Message: "torbox status 521"}
+	}
+
+	job := makeWorkerJob("retry-521-001", "pub-retry-521-001", store.StateSubmitPending, store.SourceTypeTorrent)
+	job.SourceURI = strPtr("magnet:?xt=urn:btih:abc")
+	now := time.Now().UTC()
+	past := now.Add(-time.Minute)
+	job.NextRunAt = &past
+	if err := env.store.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+
+	orch := env.newOrchestrator(t)
+	startCtx, cancel := context.WithCancel(ctx)
+	if err := orch.Start(startCtx); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "job retry-521-001 reaches StateSubmitRetry", 5*time.Second, func() bool {
+		got, _ := env.store.GetJobByID(ctx, job.ID)
+		return got != nil && got.State == store.StateSubmitRetry
+	})
+	cancel()
+	orch.Wait()
+
+	got, err := env.store.GetJobByID(ctx, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Metadata.Torbox521Attempts != 1 {
+		t.Fatalf("Torbox521Attempts = %d, want 1", got.Metadata.Torbox521Attempts)
+	}
+	if got.NextRunAt == nil || got.NextRunAt.Before(now.Add(14*time.Minute)) {
+		t.Fatalf("NextRunAt = %v, want at least 14 minutes after processing", got.NextRunAt)
+	}
+	if got.NextRunAt.After(now.Add(16 * time.Minute)) {
+		t.Fatalf("NextRunAt = %v, want about 15 minutes after processing", got.NextRunAt)
+	}
+}
+
+func TestProcessSubmitJob_Torbox521ExhaustionCleansSubmissionArtifacts(t *testing.T) {
+	env := newWorkerEnv(t)
+	ctx := context.Background()
+	env.mock.CreateTorrentTaskFn = func(context.Context, torbox.CreateTorrentTaskRequest) (*torbox.CreateTaskResponse, error) {
+		return nil, &torbox.HTTPStatusError{StatusCode: torbox.StatusTorboxOriginDown, Message: "torbox status 521"}
+	}
+
+	staging := filepath.Join(env.layout.Staging, "retry-521-002")
+	if err := os.MkdirAll(staging, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	payload, _, err := env.layout.SavePayload("retry-521-002", "source.torrent", strings.NewReader("payload"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	job := makeWorkerJob("retry-521-002", "pub-retry-521-002", store.StateSubmitRetry, store.SourceTypeTorrent)
+	job.InfoHash = strPtr("known-torrent-identity")
+	job.SourceURI = strPtr("magnet:?xt=urn:btih:abc")
+	job.StagingPath = &staging
+	job.PayloadRef = &payload
+	job.Metadata.Torbox521Attempts = 4
+	past := time.Now().UTC().Add(-time.Minute)
+	job.NextRunAt = &past
+	if err := env.store.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+
+	orch := env.newOrchestrator(t)
+	startCtx, cancel := context.WithCancel(ctx)
+	if err := orch.Start(startCtx); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "job retry-521-002 reaches StateRemoteFailed", 5*time.Second, func() bool {
+		got, _ := env.store.GetJobByID(ctx, job.ID)
+		return got != nil && got.State == store.StateRemoteFailed
+	})
+	cancel()
+	orch.Wait()
+
+	got, err := env.store.GetJobByID(ctx, job.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Metadata.Torbox521Attempts != 5 {
+		t.Fatalf("Torbox521Attempts = %d, want 5", got.Metadata.Torbox521Attempts)
+	}
+	if got.ErrorMessage == nil || !strings.Contains(*got.ErrorMessage, "HTTP 521") {
+		t.Fatalf("ErrorMessage = %v, want terminal HTTP 521 failure", got.ErrorMessage)
+	}
+	if got.StagingPath != nil || got.PayloadRef != nil {
+		t.Fatalf("submission paths = staging %v, payload %v; want both nil", got.StagingPath, got.PayloadRef)
+	}
+	if _, err := os.Stat(staging); !os.IsNotExist(err) {
+		t.Errorf("staging dir should have been removed, stat error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Dir(payload)); !os.IsNotExist(err) {
+		t.Errorf("payload dir should have been removed, stat error = %v", err)
+	}
+}
+
+func TestProcessSubmitJob_Torbox521ReconcilesQueuedTask(t *testing.T) {
+	env := newWorkerEnv(t)
+	ctx := context.Background()
+	var creates int
+	env.mock.CreateTorrentTaskFn = func(context.Context, torbox.CreateTorrentTaskRequest) (*torbox.CreateTaskResponse, error) {
+		creates++
+		return &torbox.CreateTaskResponse{QueuedID: "unexpected"}, nil
+	}
+	env.mock.FindQueuedTaskFn = func(context.Context, string, string, string, string) (*torbox.TaskStatus, error) {
+		return &torbox.TaskStatus{QueuedID: "queued-521", Hash: "abc"}, nil
+	}
+
+	job := makeWorkerJob("retry-521-003", "pub-retry-521-003", store.StateSubmitRetry, store.SourceTypeTorrent)
+	job.SourceURI = strPtr("magnet:?xt=urn:btih:abc")
+	job.InfoHash = strPtr("abc")
+	job.Metadata.Torbox521Attempts = 1
+	past := time.Now().UTC().Add(-time.Minute)
+	job.NextRunAt = &past
+	if err := env.store.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+
+	orch := env.newOrchestrator(t)
+	startCtx, cancel := context.WithCancel(ctx)
+	if err := orch.Start(startCtx); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "job retry-521-003 reaches StateRemoteQueued", 5*time.Second, func() bool {
+		got, _ := env.store.GetJobByID(ctx, job.ID)
+		return got != nil && got.State == store.StateRemoteQueued
+	})
+	cancel()
+	orch.Wait()
+
+	if creates != 0 {
+		t.Fatalf("create calls = %d, want 0 after queued reconciliation", creates)
+	}
+}
+
 // ─── Remove Job ─────────────────────────────────────────────────────────────
 
 func TestProcessRemoveJob(t *testing.T) {
@@ -603,6 +746,7 @@ func TestProgressBytes_ZeroStaysZero(t *testing.T) {
 	}
 
 	job := makeWorkerJob("zero-001", "pub-zero-001", store.StateRemoteActive, store.SourceTypeTorrent)
+	initialUpdatedAt := job.UpdatedAt
 	job.RemoteID = strPtr("remote-zero-001")
 	past := time.Now().UTC().Add(-1 * time.Minute)
 	job.NextRunAt = &past
@@ -618,7 +762,7 @@ func TestProgressBytes_ZeroStaysZero(t *testing.T) {
 	// Zero bytes: just wait for the poller to have processed (UpdatedAt changes)
 	waitFor(t, "job zero-001 processed by poller", 5*time.Second, func() bool {
 		got, _ := env.store.GetJobByID(ctx, "zero-001")
-		return got != nil && got.UpdatedAt.After(past)
+		return got != nil && got.UpdatedAt.After(initialUpdatedAt)
 	})
 	cancel()
 	orch.Wait()
@@ -816,6 +960,161 @@ func TestProcessDownloadJob_Refreshes404Link(t *testing.T) {
 	}
 }
 
+func TestProcessDownloadJob_Refreshes403Link(t *testing.T) {
+	env := newWorkerEnv(t)
+	ctx := context.Background()
+
+	const content = "refreshed payload"
+
+	staleServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer staleServer.Close()
+
+	freshServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprintf("%d", len(content)))
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(content))
+	}))
+	defer freshServer.Close()
+
+	var getLinksCalls atomic.Int32
+	env.mock.GetDownloadLinksFn = func(ctx context.Context, sourceType, remoteID string) ([]torbox.DownloadAsset, error) {
+		call := getLinksCalls.Add(1)
+		url := staleServer.URL + "/file.bin"
+		if call > 1 {
+			url = freshServer.URL + "/file.bin"
+		}
+		return []torbox.DownloadAsset{{
+			FileID:       "file-1",
+			URL:          url,
+			RelativePath: "file.bin",
+			Size:         int64(len(content)),
+		}}, nil
+	}
+
+	job := makeWorkerJob("download-refresh-001", "pub-download-refresh-001", store.StateLocalDownloadPending, store.SourceTypeTorrent)
+	job.RemoteID = strPtr("remote-download-refresh-001")
+	past := time.Now().UTC().Add(-1 * time.Minute)
+	job.NextRunAt = &past
+	if err := env.store.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := workerConfig(env.tmpDir)
+	cfg.Workers.DownloadInterval = 100 * time.Millisecond
+	cfg.Workers.FinalizeInterval = time.Hour
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	downloader := files.NewRangeDownloader(logger, 30*time.Second)
+	orch := worker.NewOrchestrator(cfg, logger, env.store, env.layout, downloader, env.mock)
+
+	startCtx, cancel := context.WithCancel(ctx)
+	if err := orch.Start(startCtx); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "job download-refresh-001 reaches StateLocalVerify", 5*time.Second, func() bool {
+		got, _ := env.store.GetJobByID(ctx, "download-refresh-001")
+		return got != nil && got.State == store.StateLocalVerify
+	})
+	cancel()
+	orch.Wait()
+
+	if got := getLinksCalls.Load(); got < 2 {
+		t.Fatalf("GetDownloadLinks called %d times, want at least 2", got)
+	}
+
+	parts, err := env.store.ListTransferParts(ctx, "download-refresh-001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parts) != 1 {
+		t.Fatalf("len(parts) = %d, want 1", len(parts))
+	}
+	if parts[0].SourceURL != freshServer.URL+"/file.bin" {
+		t.Fatalf("SourceURL = %q, want refreshed URL", parts[0].SourceURL)
+	}
+
+	got, err := env.store.GetJobByID(ctx, "download-refresh-001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.StagingPath == nil {
+		t.Fatal("expected staging path to be set")
+	}
+	data, err := os.ReadFile(filepath.Join(*got.StagingPath, "file.bin"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != content {
+		t.Fatalf("downloaded content = %q, want %q", string(data), content)
+	}
+}
+
+func TestProcessDownloadJob_FailsWhen400LinkCannotBeRefreshed(t *testing.T) {
+	env := newWorkerEnv(t)
+	ctx := context.Background()
+
+	staleServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+	}))
+	defer staleServer.Close()
+
+	var getLinksCalls atomic.Int32
+	env.mock.GetDownloadLinksFn = func(ctx context.Context, sourceType, remoteID string) ([]torbox.DownloadAsset, error) {
+		getLinksCalls.Add(1)
+		return []torbox.DownloadAsset{{
+			FileID:       "file-1",
+			URL:          staleServer.URL + "/file.bin",
+			RelativePath: "file.bin",
+			Size:         16,
+		}}, nil
+	}
+
+	job := makeWorkerJob("download-400-fail-001", "pub-download-400-fail-001", store.StateLocalDownloadPending, store.SourceTypeTorrent)
+	job.RemoteID = strPtr("remote-download-400-fail-001")
+	past := time.Now().UTC().Add(-1 * time.Minute)
+	job.NextRunAt = &past
+	if err := env.store.CreateJob(ctx, job); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := workerConfig(env.tmpDir)
+	cfg.Workers.DownloadInterval = 100 * time.Millisecond
+	cfg.Workers.FinalizeInterval = time.Hour
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	downloader := files.NewRangeDownloader(logger, 30*time.Second)
+	orch := worker.NewOrchestrator(cfg, logger, env.store, env.layout, downloader, env.mock)
+
+	startCtx, cancel := context.WithCancel(ctx)
+	if err := orch.Start(startCtx); err != nil {
+		t.Fatal(err)
+	}
+	waitFor(t, "job download-400-fail-001 reaches StateFailed", 5*time.Second, func() bool {
+		got, _ := env.store.GetJobByID(ctx, "download-400-fail-001")
+		return got != nil && got.State == store.StateFailed
+	})
+	cancel()
+	orch.Wait()
+
+	if got := getLinksCalls.Load(); got != 2 {
+		t.Fatalf("GetDownloadLinks called %d times, want 2", got)
+	}
+
+	got, err := env.store.GetJobByID(ctx, "download-400-fail-001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.NextRunAt != nil {
+		t.Fatalf("NextRunAt = %v, want nil", got.NextRunAt)
+	}
+	if got.ErrorMessage == nil || *got.ErrorMessage != "download part returned HTTP 400 and no fresh link was available" {
+		t.Fatalf("ErrorMessage = %v, want terminal refresh error", got.ErrorMessage)
+	}
+	if got.RetryCount != 0 {
+		t.Fatalf("RetryCount = %d, want 0", got.RetryCount)
+	}
+}
+
 func TestProcessDownloadJob_Refreshes500Link(t *testing.T) {
 	env := newWorkerEnv(t)
 	ctx := context.Background()
@@ -967,7 +1266,7 @@ func TestProcessDownloadJob_FailsAfterThree5xxResponses(t *testing.T) {
 	}
 }
 
-func TestProcessDownloadJob_DoesNotRefresh403Link(t *testing.T) {
+func TestProcessDownloadJob_FailsAfterRepeated403(t *testing.T) {
 	env := newWorkerEnv(t)
 	ctx := context.Background()
 
@@ -1006,15 +1305,15 @@ func TestProcessDownloadJob_DoesNotRefresh403Link(t *testing.T) {
 	if err := orch.Start(startCtx); err != nil {
 		t.Fatal(err)
 	}
-	waitFor(t, "job download-no-refresh-001 reaches StateLocalDownloading", 5*time.Second, func() bool {
+	waitFor(t, "job download-no-refresh-001 reaches StateFailed", 5*time.Second, func() bool {
 		got, _ := env.store.GetJobByID(ctx, "download-no-refresh-001")
-		return got != nil && got.State == store.StateLocalDownloading
+		return got != nil && got.State == store.StateFailed
 	})
 	cancel()
 	orch.Wait()
 
-	if got := calls.Load(); got != 1 {
-		t.Fatalf("GetDownloadLinks called %d times, want 1", got)
+	if got := calls.Load(); got != 4 {
+		t.Fatalf("GetDownloadLinks called %d times, want 4", got)
 	}
 
 	parts, err := env.store.ListTransferParts(ctx, "download-no-refresh-001")
@@ -1028,8 +1327,11 @@ func TestProcessDownloadJob_DoesNotRefresh403Link(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got.RetryCount != 0 {
-		t.Fatalf("RetryCount = %d, want 0", got.RetryCount)
+	if got.RetryCount != 3 {
+		t.Fatalf("RetryCount = %d, want 3", got.RetryCount)
+	}
+	if got.NextRunAt != nil || got.ClaimedBy != nil {
+		t.Fatal("terminal download must stop retries and release its claim")
 	}
 }
 

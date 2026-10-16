@@ -62,6 +62,8 @@ Optional overrides:
 | `TORBOXARR_DATABASE_PATH` | `/config/torboxarr.db` | SQLite database path; the container stores state under `/config` |
 | `TORBOXARR_LOG_LEVEL` | `INFO` | Log verbosity: DEBUG, INFO, WARN, or ERROR |
 | `TORBOXARR_SAB_NZB_KEY` | falls back to `TORBOXARR_SAB_API_KEY` | Explicit key for the SABnzbd-compatible endpoint; omit it to reuse the SAB API key |
+| `TORBOXARR_UPSTREAM_REMOVE` | `false` | Also remove matching active and queued TorBox tasks when the client removes a job |
+| `TORBOXARR_REMOTE_ABSENCE_ATTEMPTS` | `5` | Successful checks finding a tracked task absent from both active and queued views before reporting failure |
 
 Docker-specific runtime variables used by the bundled compose file. Set these to the same UID/GID that Sonarr and Radarr use on the host, so TorBoxarr can write to the same download and category folders:
 
@@ -69,6 +71,61 @@ Docker-specific runtime variables used by the bundled compose file. Set these to
 |---|---|---|
 | `PUID` | none | UID the container drops to before starting TorBoxarr; required for the bundled Docker setup |
 | `PGID` | none | GID the container drops to before starting TorBoxarr; required for the bundled Docker setup |
+
+### Upstream Removal
+
+By default, client removal only deletes local files and retains the TorBox task.
+Set `TORBOXARR_UPSTREAM_REMOVE=true` to also remove strongly matched active and
+queued torrent or Usenet tasks. Removal starts when Sonarr/Radarr or another
+client requests deletion, rather than when the local download finishes.
+
+Transient failures retry with exponential backoff, starting at the remover
+interval. Active and queued representations have separate limits of five
+delete attempts and five reconciliation failures. Local files remain while a
+retry is pending. Once those limits are reached, or deletion is rejected or
+cannot be identified safely, local cleanup proceeds and the removed job retains
+a warning for the normal retention period. Logs distinguish complete cleanup
+from `job removed locally; upstream cleanup incomplete`. Upstream tasks can
+remain after an incomplete outcome and may need manual removal.
+
+### Queue Recovery
+
+Accepted TorBox jobs stay pending while TorBox confirms they are queued. A
+queue ID is not treated as an active task ID. TorBoxarr reconciles both views
+across queue-to-active handover and retries lookup failures without counting
+them as confirmed absence. Successful queue or active matches reset absence
+accounting. Startup also rechecks eligible historical missing-task failures.
+This does not force-start queued jobs or resubmit tasks missing from both views.
+
+### Local Download Recovery
+
+Local transfers time out after two minutes without receiving bytes, including
+stalled response headers or bodies. Progressing transfers have no short API
+request deadline. Partial files are retained for retry, and TorBoxarr requests
+fresh links after HTTP 400/403/404, server errors, or an idle timeout.
+
+Three consecutive status/idle failures without byte progress fail the local
+download; a newly refreshed link at the limit gets one final transfer attempt.
+Actual progress, including small resumed writes, resets the budget. HTTP 400/404 fails immediately
+only when link lookup succeeds but provides no replacement. A link-refresh
+request failure remains retryable within the same bounded budget. Failed jobs
+remain visible to the client for handling and removal.
+
+### Submission Recovery
+
+HTTP 521 submissions use five persisted attempts, separated by 15 minutes,
+30 minutes, one hour, and three hours. Eligible historical 521 failures are
+rechecked on startup. Exhaustion leaves a failed job visible to the client and
+cleans its local submission artifacts.
+
+Before sending a create request, TorBoxarr persists that its outcome may become
+uncertain. After a timeout, lost response, restart, or other retryable delivery
+failure, it checks applicable queued and active identities before submitting
+again. This applies to ordinary failures as well as HTTP 521. If the outcome
+cannot be resolved, it retains the job and logs pending reconciliation. An
+uncertain submission with no usable tracking identity is not sent again blindly
+and may require manual handling. Proven failures before request delivery can
+retry normally. This does not promise provider-side exactly-once submission.
 
 ### Connecting Sonarr/Radarr / Download Clients
 
