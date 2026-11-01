@@ -45,9 +45,20 @@ func (o *Orchestrator) processSubmitJob(ctx context.Context, job *store.Job) err
 
 	switch job.SourceType {
 	case store.SourceTypeTorrent:
+		magnet := deref(job.SourceURI)
+		payloadPath := deref(job.PayloadRef)
+		if payloadPath == "" && isHTTPURL(magnet) {
+			resolvedMagnet, resolvedPayload, rerr := o.resolveTorrentSource(ctx, job, magnet)
+			if rerr != nil {
+				return o.handleSubmitFailure(ctx, job, rerr)
+			}
+			magnet, payloadPath = resolvedMagnet, resolvedPayload
+			job.SourceURI = ptr(magnet)
+			job.PayloadRef = ptr(payloadPath)
+		}
 		resp, err = o.torbox.CreateTorrentTask(ctx, torbox.CreateTorrentTaskRequest{
-			Magnet:          deref(job.SourceURI),
-			PayloadPath:     deref(job.PayloadRef),
+			Magnet:          magnet,
+			PayloadPath:     payloadPath,
 			Name:            job.DisplayName,
 			AsQueued:        job.Metadata.AsQueued,
 			AddOnlyIfCached: job.Metadata.AddOnlyIfCached,
