@@ -2,6 +2,7 @@ package compat_test
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -102,6 +103,22 @@ func TestProjectQBitState_AllStates(t *testing.T) {
 				t.Errorf("state = %q, want %q", info.State, tt.want)
 			}
 		})
+	}
+}
+
+func TestQBitHash_PrefersInfoHash(t *testing.T) {
+	job := baseJob()
+	if got := compat.QBitHash(job); got != strings.ToLower(job.PublicID) {
+		t.Errorf("without info hash: QBitHash = %q, want the public ID %q", got, job.PublicID)
+	}
+	hash := "AECF132E00F4760AB55489C27D4A7CDACE410A34"
+	job.InfoHash = &hash
+	if got := compat.QBitHash(job); got != strings.ToLower(hash) {
+		t.Errorf("with info hash: QBitHash = %q, want %q", got, strings.ToLower(hash))
+	}
+	info := compat.ProjectQBitTorrent(job)
+	if info.Hash != strings.ToLower(hash) || info.InfohashV1 != strings.ToLower(hash) {
+		t.Errorf("Hash = %q, InfohashV1 = %q, want the info hash", info.Hash, info.InfohashV1)
 	}
 }
 

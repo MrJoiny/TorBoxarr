@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/mrjoiny/torboxarr/internal/auth"
+	"github.com/mrjoiny/torboxarr/internal/compat"
 	"github.com/mrjoiny/torboxarr/internal/config"
 	"github.com/mrjoiny/torboxarr/internal/files"
 	"github.com/mrjoiny/torboxarr/internal/store"
@@ -197,6 +198,13 @@ func (s *Server) markRemovePending(ctx context.Context, publicID string) error {
 		return err
 	}
 	if job == nil {
+		// qBit clients name torrents by the hash TorBoxarr reports, which is the
+		// info hash when it is known (see compat.QBitHash).
+		if job, err = s.store.GetVisibleClientJobByInfoHash(ctx, store.ClientKindQBit, publicID); err != nil {
+			return err
+		}
+	}
+	if job == nil {
 		return nil
 	}
 	if job.State == store.StateRemoved || job.State == store.StateRemovePending {
@@ -369,17 +377,22 @@ func sanitizeQuery(values url.Values) map[string]string {
 	return out
 }
 
+// filterJobsByPublicIDs keeps the jobs named in hashes, by public ID or by
+// torrent info hash, so both the hashes TorBoxarr reports now and the public
+// IDs it reported before keep working.
 func filterJobsByPublicIDs(jobs []*store.Job, hashes []string) []*store.Job {
 	if len(hashes) == 0 {
 		return jobs
 	}
 	set := map[string]struct{}{}
 	for _, hash := range hashes {
-		set[hash] = struct{}{}
+		set[strings.ToLower(hash)] = struct{}{}
 	}
 	filtered := make([]*store.Job, 0, len(jobs))
 	for _, job := range jobs {
-		if _, ok := set[job.PublicID]; ok {
+		_, byID := set[strings.ToLower(job.PublicID)]
+		_, byHash := set[compat.QBitHash(job)]
+		if byID || byHash {
 			filtered = append(filtered, job)
 		}
 	}

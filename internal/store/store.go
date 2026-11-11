@@ -303,6 +303,19 @@ func (s *Store) GetJobByPublicID(ctx context.Context, publicID string) (*Job, er
 	return job, err
 }
 
+// GetVisibleClientJobByInfoHash returns the newest job of clientKind that is not
+// removed and has this torrent info hash, or nil.
+func (s *Store) GetVisibleClientJobByInfoHash(ctx context.Context, clientKind ClientKind, infoHash string) (*Job, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT `+jobColumns+` FROM jobs
+        WHERE client_kind = ? AND lower(info_hash) = lower(?) AND state != 'removed'
+        ORDER BY created_at DESC LIMIT 1`, string(clientKind), infoHash)
+	job, err := scanJob(row)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	return job, err
+}
+
 func (s *Store) ListVisibleClientJobs(ctx context.Context, clientKind ClientKind, category string, limit int) ([]*Job, error) {
 	query := `
         SELECT ` + jobColumns + ` FROM jobs

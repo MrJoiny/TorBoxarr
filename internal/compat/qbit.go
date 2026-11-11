@@ -107,7 +107,7 @@ func ProjectQBitTransferInfo(jobs []*store.Job) QBitTransferInfo {
 func ProjectQBitMainData(rid int64, jobs []*store.Job, categories map[string]QBitCategory, freeSpace int64) QBitMainData {
 	torrents := make(map[string]QBitTorrentInfo, len(jobs))
 	for _, job := range jobs {
-		torrents[job.PublicID] = ProjectQBitTorrent(job)
+		torrents[QBitHash(job)] = ProjectQBitTorrent(job)
 	}
 	if categories == nil {
 		categories = map[string]QBitCategory{}
@@ -130,6 +130,19 @@ func ProjectQBitMainData(rid int64, jobs []*store.Job, categories map[string]QBi
 			FreeSpaceOnDisk:  freeSpace,
 		},
 	}
+}
+
+// QBitHash is the hash qBit clients see for a job: the torrent's info hash
+// when TorBoxarr knows it, as real qBittorrent reports, else the public ID.
+// Clients that follow a torrent by the info hash of what they added (magnet
+// or .torrent) need the former to find it again.
+func QBitHash(job *store.Job) string {
+	if job.InfoHash != nil {
+		if h := strings.ToLower(strings.TrimSpace(*job.InfoHash)); h != "" {
+			return h
+		}
+	}
+	return strings.ToLower(job.PublicID)
 }
 
 func ProjectQBitTorrent(job *store.Job) QBitTorrentInfo {
@@ -161,8 +174,8 @@ func ProjectQBitTorrent(job *store.Job) QBitTorrentInfo {
 		DLSpeed:      qbitDLSpeed(job),
 		Downloaded:   done,
 		Eta:          qbitETA(job),
-		Hash:         job.PublicID,
-		InfohashV1:   job.PublicID,
+		Hash:         QBitHash(job),
+		InfohashV1:   QBitHash(job),
 		MagnetURI:    magnetURI,
 		Name:         job.DisplayName,
 		Priority:     0,
