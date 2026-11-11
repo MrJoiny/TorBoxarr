@@ -1,6 +1,7 @@
 package compat_test
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -40,8 +41,8 @@ func TestProjectSABQueueSlot(t *testing.T) {
 	if slot.MBLeft != "5.00" {
 		t.Errorf("MBLeft = %q, want %q", slot.MBLeft, "5.00")
 	}
-	if slot.Percentage != 50 {
-		t.Errorf("Percentage = %d, want %d", slot.Percentage, 50)
+	if slot.Percentage != "50" {
+		t.Errorf("Percentage = %q, want %q", slot.Percentage, "50")
 	}
 }
 
@@ -85,8 +86,8 @@ func TestProjectSABQueueSlot_IgnoresRemoteProgress(t *testing.T) {
 	if slot.MBLeft != "0.00" {
 		t.Errorf("MBLeft = %q, want %q", slot.MBLeft, "0.00")
 	}
-	if slot.Percentage != 0 {
-		t.Errorf("Percentage = %d, want %d", slot.Percentage, 0)
+	if slot.Percentage != "0" {
+		t.Errorf("Percentage = %q, want %q", slot.Percentage, "0")
 	}
 }
 
@@ -127,6 +128,64 @@ func TestProjectSABHistorySlot(t *testing.T) {
 	}
 	if slot.Storage != completed {
 		t.Errorf("Storage = %q, want %q", slot.Storage, completed)
+	}
+}
+
+// Strict JSON clients decode SAB responses into typed structs, so the field
+// types must match SABnzbd's API exactly.
+func TestSABResponses_DecodeWithSABnzbdTypes(t *testing.T) {
+	now := time.Now().UTC()
+	jobs := []*store.Job{
+		{PublicID: "q1", State: store.StateLocalDownloading, BytesTotal: 1000, BytesDone: 500, CreatedAt: now, UpdatedAt: now},
+		{PublicID: "q2", State: store.StateRemoteQueued, CreatedAt: now, UpdatedAt: now},
+		{PublicID: "h1", State: store.StateCompleted, BytesTotal: 2048, BytesDone: 2048, CreatedAt: now, UpdatedAt: now},
+	}
+
+	queueJSON, err := json.Marshal(compat.ProjectSABQueue("1.0", jobs))
+	if err != nil {
+		t.Fatalf("marshal queue: %v", err)
+	}
+	var queue struct {
+		Queue struct {
+			NoOfSlots      int `json:"noofslots"`
+			NoOfSlotsTotal int `json:"noofslots_total"`
+			Slots          []struct {
+				Index      int    `json:"index"`
+				Percentage string `json:"percentage"`
+			} `json:"slots"`
+		} `json:"queue"`
+	}
+	if err := json.Unmarshal(queueJSON, &queue); err != nil {
+		t.Fatalf("strict decode of queue failed: %v\n%s", err, queueJSON)
+	}
+	if queue.Queue.NoOfSlots != 2 || queue.Queue.NoOfSlotsTotal != 2 {
+		t.Errorf("noofslots = %d, noofslots_total = %d, want 2 and 2", queue.Queue.NoOfSlots, queue.Queue.NoOfSlotsTotal)
+	}
+	if got := []int{queue.Queue.Slots[0].Index, queue.Queue.Slots[1].Index}; got[0] != 0 || got[1] != 1 {
+		t.Errorf("slot indexes = %v, want [0 1]", got)
+	}
+
+	historyJSON, err := json.Marshal(compat.ProjectSABHistory("1.0", jobs))
+	if err != nil {
+		t.Fatalf("marshal history: %v", err)
+	}
+	var history struct {
+		History struct {
+			NoOfSlots int `json:"noofslots"`
+			Slots     []struct {
+				Bytes     int64 `json:"bytes"`
+				Completed int64 `json:"completed"`
+			} `json:"slots"`
+		} `json:"history"`
+	}
+	if err := json.Unmarshal(historyJSON, &history); err != nil {
+		t.Fatalf("strict decode of history failed: %v\n%s", err, historyJSON)
+	}
+	if history.History.NoOfSlots != 1 {
+		t.Errorf("history noofslots = %d, want 1", history.History.NoOfSlots)
+	}
+	if history.History.Slots[0].Bytes != 2048 {
+		t.Errorf("history bytes = %d, want 2048", history.History.Slots[0].Bytes)
 	}
 }
 

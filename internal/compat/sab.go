@@ -3,6 +3,7 @@ package compat
 import (
 	"fmt"
 	"math"
+	"strconv"
 	"strings"
 
 	"github.com/mrjoiny/torboxarr/internal/store"
@@ -17,24 +18,30 @@ type SABQueueResponse struct {
 	Queue SABQueue `json:"queue"`
 }
 
+// Field types follow SABnzbd's own API: counts and byte sizes are JSON
+// numbers, while percentage is a whole number sent as a string ("50").
+// Strict clients (Go's encoding/json, e.g. HolyArrs) reject anything else;
+// lenient ones (Sonarr/Radarr) accept both.
 type SABQueue struct {
-	Version   string         `json:"version"`
-	Paused    bool           `json:"paused"`
-	NoOfSlots string         `json:"noofslots"`
-	Start     int            `json:"start"`
-	Limit     int            `json:"limit"`
-	Finish    int            `json:"finish"`
-	Slots     []SABQueueSlot `json:"slots"`
-	Status    string         `json:"status"`
+	Version        string         `json:"version"`
+	Paused         bool           `json:"paused"`
+	NoOfSlots      int            `json:"noofslots"`
+	NoOfSlotsTotal int            `json:"noofslots_total"`
+	Start          int            `json:"start"`
+	Limit          int            `json:"limit"`
+	Finish         int            `json:"finish"`
+	Slots          []SABQueueSlot `json:"slots"`
+	Status         string         `json:"status"`
 }
 
 type SABQueueSlot struct {
+	Index      int    `json:"index"`
 	NzoID      string `json:"nzo_id"`
 	Filename   string `json:"filename"`
 	Cat        string `json:"cat"`
 	MB         string `json:"mb"`
 	MBLeft     string `json:"mbleft"`
-	Percentage int    `json:"percentage"`
+	Percentage string `json:"percentage"`
 	Status     string `json:"status"`
 	TimeLeft   string `json:"timeleft"`
 	Priority   string `json:"priority"`
@@ -48,7 +55,7 @@ type SABHistoryResponse struct {
 
 type SABHistory struct {
 	Version   string           `json:"version"`
-	NoOfSlots string           `json:"noofslots"`
+	NoOfSlots int              `json:"noofslots"`
 	Slots     []SABHistorySlot `json:"slots"`
 }
 
@@ -62,6 +69,7 @@ type SABHistorySlot struct {
 	Storage     string `json:"storage"`
 	Completed   int64  `json:"completed"`
 	Downloaded  int64  `json:"downloaded"`
+	Bytes       int64  `json:"bytes"`
 	Size        string `json:"size"`
 }
 
@@ -77,20 +85,22 @@ func ProjectSABQueue(version string, jobs []*store.Job) SABQueueResponse {
 			continue
 		}
 		slot := ProjectSABQueueSlot(job)
+		slot.Index = len(slots)
 		slots = append(slots, slot)
 		if slot.Status == "Downloading" {
 			status = "Downloading"
 		}
 	}
 	return SABQueueResponse{Queue: SABQueue{
-		Version:   version,
-		Paused:    false,
-		NoOfSlots: fmt.Sprintf("%d", len(slots)),
-		Start:     0,
-		Limit:     len(slots),
-		Finish:    len(slots),
-		Slots:     slots,
-		Status:    status,
+		Version:        version,
+		Paused:         false,
+		NoOfSlots:      len(slots),
+		NoOfSlotsTotal: len(slots),
+		Start:          0,
+		Limit:          len(slots),
+		Finish:         len(slots),
+		Slots:          slots,
+		Status:         status,
 	}}
 }
 
@@ -104,7 +114,7 @@ func ProjectSABHistory(version string, jobs []*store.Job) SABHistoryResponse {
 	}
 	return SABHistoryResponse{History: SABHistory{
 		Version:   version,
-		NoOfSlots: fmt.Sprintf("%d", len(slots)),
+		NoOfSlots: len(slots),
 		Slots:     slots,
 	}}
 }
@@ -119,7 +129,7 @@ func ProjectSABQueueSlot(job *store.Job) SABQueueSlot {
 		Cat:        job.Category,
 		MB:         fmt.Sprintf("%.2f", totalMB),
 		MBLeft:     fmt.Sprintf("%.2f", leftMB),
-		Percentage: percent(done, total),
+		Percentage: strconv.Itoa(percent(done, total)),
 		Status:     projectSABQueueStatus(job, total),
 		TimeLeft:   projectSABTimeLeft(job),
 		Priority:   "Normal",
@@ -151,6 +161,7 @@ func ProjectSABHistorySlot(job *store.Job) SABHistorySlot {
 		Storage:     storage,
 		Completed:   job.UpdatedAt.Unix(),
 		Downloaded:  job.BytesDone,
+		Bytes:       max(job.BytesTotal, job.BytesDone),
 		Size:        fmt.Sprintf("%.2f MB", bytesToMB(max(job.BytesTotal, job.BytesDone))),
 	}
 }
