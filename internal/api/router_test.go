@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -744,8 +745,14 @@ func TestSABQueue(t *testing.T) {
 	if len(queue.Slots) != 1 {
 		t.Fatalf("got %d queue slots, want %d", len(queue.Slots), 1)
 	}
-	if _, ok := queue.Slots[0].Percentage.(float64); !ok {
-		t.Fatalf("percentage type = %T, want numeric JSON value", queue.Slots[0].Percentage)
+	// SABnzbd sends percentage as a whole number in a string ("50"); Sonarr
+	// accepts that, strict clients require it, and "50.00" breaks Sonarr.
+	p, ok := queue.Slots[0].Percentage.(string)
+	if !ok {
+		t.Fatalf("percentage type = %T, want string like SABnzbd", queue.Slots[0].Percentage)
+	}
+	if _, err := strconv.Atoi(p); err != nil {
+		t.Fatalf("percentage = %q, want a whole number", p)
 	}
 }
 
@@ -799,7 +806,7 @@ func TestSABQueue_UsesLocalTransferPartsForProgressAndTimeLeft(t *testing.T) {
 	var resp struct {
 		Queue struct {
 			Slots []struct {
-				Percentage int    `json:"percentage"`
+				Percentage string `json:"percentage"`
 				TimeLeft   string `json:"timeleft"`
 				MB         string `json:"mb"`
 				MBLeft     string `json:"mbleft"`
@@ -813,8 +820,8 @@ func TestSABQueue_UsesLocalTransferPartsForProgressAndTimeLeft(t *testing.T) {
 		t.Fatalf("got %d queue slots, want 1", len(resp.Queue.Slots))
 	}
 	slot := resp.Queue.Slots[0]
-	if slot.Percentage != 50 {
-		t.Errorf("Percentage = %d, want 50", slot.Percentage)
+	if slot.Percentage != "50" {
+		t.Errorf("Percentage = %q, want %q", slot.Percentage, "50")
 	}
 	if slot.TimeLeft != "0:00:10" {
 		t.Errorf("TimeLeft = %q, want %q", slot.TimeLeft, "0:00:10")
