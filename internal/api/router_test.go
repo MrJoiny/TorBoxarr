@@ -322,6 +322,77 @@ func TestQBitInfo(t *testing.T) {
 	}
 }
 
+func TestQBitSyncMainData(t *testing.T) {
+	env := newTestEnv(t)
+	sid := env.loginQBit(t)
+
+	env.qbitMultipartAdd(t, sid, map[string]string{
+		"urls":     "magnet:?xt=urn:btih:aaaa1111bbbb2222cccc3333dddd4444eeee5555",
+		"category": "tv",
+	})
+
+	rec := env.qbitRequest(t, "GET", "/api/v2/sync/maindata?rid=7", nil, "", sid)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	// Decode with qBittorrent's types, as strict clients do.
+	var resp struct {
+		Rid        int64 `json:"rid"`
+		FullUpdate bool  `json:"full_update"`
+		Torrents   map[string]struct {
+			Hash     string `json:"hash"`
+			Category string `json:"category"`
+			State    string `json:"state"`
+		} `json:"torrents"`
+		Categories map[string]struct {
+			Name     string `json:"name"`
+			SavePath string `json:"savePath"`
+		} `json:"categories"`
+		ServerState struct {
+			ConnectionStatus string `json:"connection_status"`
+			FreeSpaceOnDisk  int64  `json:"free_space_on_disk"`
+		} `json:"server_state"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Rid != 8 {
+		t.Errorf("rid = %d, want 8", resp.Rid)
+	}
+	if !resp.FullUpdate {
+		t.Error("full_update = false, want true")
+	}
+	if len(resp.Torrents) != 1 {
+		t.Fatalf("got %d torrents, want 1", len(resp.Torrents))
+	}
+	for hash, torrent := range resp.Torrents {
+		if torrent.Hash != hash {
+			t.Errorf("torrent keyed %q has hash %q", hash, torrent.Hash)
+		}
+		if torrent.Category != "tv" {
+			t.Errorf("Category = %q, want %q", torrent.Category, "tv")
+		}
+	}
+	if _, ok := resp.Categories["tv"]; !ok {
+		t.Errorf("categories = %v, want tv", resp.Categories)
+	}
+	if resp.ServerState.ConnectionStatus != "connected" {
+		t.Errorf("connection_status = %q, want %q", resp.ServerState.ConnectionStatus, "connected")
+	}
+	if resp.ServerState.FreeSpaceOnDisk <= 0 {
+		t.Errorf("free_space_on_disk = %d, want > 0", resp.ServerState.FreeSpaceOnDisk)
+	}
+}
+
+func TestQBitSyncMainData_Unauthenticated(t *testing.T) {
+	env := newTestEnv(t)
+	rec := env.qbitRequest(t, "GET", "/api/v2/sync/maindata?rid=0", nil, "", "")
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
 func TestQBitInfo_UsesLocalTransferPartsForProgressAndEta(t *testing.T) {
 	env := newTestEnv(t)
 	sid := env.loginQBit(t)

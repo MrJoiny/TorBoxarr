@@ -69,6 +69,7 @@ func (s *Server) Router() http.Handler {
 	mux.Handle("/api/v2/torrents/categories", getOnly(s.qbitProtected(http.HandlerFunc(s.handleQBitCategories))))
 	mux.Handle("/api/v2/torrents/createCategory", postOnly(s.qbitProtected(http.HandlerFunc(s.handleQBitCreateCategory))))
 	mux.Handle("/api/v2/transfer/info", getOnly(s.qbitProtected(http.HandlerFunc(s.handleQBitTransferInfo))))
+	mux.Handle("/api/v2/sync/maindata", getOnly(s.qbitProtected(http.HandlerFunc(s.handleQBitSyncMainData))))
 
 	mux.HandleFunc("/api", s.handleSABAPI)
 	mux.HandleFunc("/sabnzbd/api", s.handleSABAPI)
