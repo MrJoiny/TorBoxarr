@@ -1,14 +1,21 @@
 package api
 
 import (
+	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"html"
+	"io"
+	"mime"
 	"mime/multipart"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/mrjoiny/torboxarr/internal/compat"
 	"github.com/mrjoiny/torboxarr/internal/store"
@@ -222,7 +229,7 @@ func (s *Server) handleSABAddURL(w http.ResponseWriter, r *http.Request) {
 	postProcessing := parseInt(firstNonEmpty(r.FormValue("pp"), r.URL.Query().Get("pp")), -1)
 	password := firstNonEmpty(r.FormValue("password"), r.URL.Query().Get("password"))
 
-	job, _, err := s.enqueueSubmission(r.Context(), SubmissionRequest{
+	req := SubmissionRequest{
 		SourceType:  store.SourceTypeNZB,
 		ClientKind:  store.ClientKindSAB,
 		Category:    category,
@@ -232,12 +239,86 @@ func (s *Server) handleSABAddURL(w http.ResponseWriter, r *http.Request) {
 			PostProcessing: postProcessing,
 			Password:       password,
 		},
-	})
+	}
+	// SABnzbd fetches addurl links itself, so links that only resolve where it
+	// runs (an indexer proxy such as Prowlarr on a private network) still work.
+	// TorBox fetches links from its own servers and refuses those, so fetch the
+	// NZB here and submit it as a file. If that fails, pass the link on as before.
+	if body, filename, err := s.fetchNZB(r.Context(), link); err == nil {
+		req.SourceURI = ""
+		req.PayloadName = filename
+		req.PayloadBody = bytes.NewReader(body)
+		req.Metadata.OriginalFilename = filename
+		if req.DisplayName == "" {
+			req.DisplayName = filename
+		}
+	} else {
+		// The link is not logged: indexer links usually carry an API key.
+		s.log.Warn("sab addurl: could not fetch the nzb, passing the link to torbox", "error", err.Error())
+	}
+
+	job, _, err := s.enqueueSubmission(r.Context(), req)
 	if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]any{"status": false, "error": err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, compat.SABAddResponse{Status: true, NzoIDs: []string{compat.SABNZOID(job.PublicID)}})
+}
+
+// maxNZBSize caps an NZB fetched for addurl; real NZBs are a few MB at most.
+const maxNZBSize = 64 << 20
+
+// fetchNZB downloads an http(s) NZB link and returns its body and a file name.
+// It refuses answers that are not NZBs, such as an indexer's HTML error page.
+func (s *Server) fetchNZB(ctx context.Context, link string) ([]byte, string, error) {
+	u, err := url.Parse(strings.TrimSpace(link))
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+		return nil, "", errors.New("not an http(s) link")
+	}
+	timeout := s.cfg.TorBox.RequestTimeout
+	if timeout <= 0 {
+		timeout = 45 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u.String(), nil)
+	if err != nil {
+		return nil, "", err
+	}
+	if s.cfg.TorBox.UserAgent != "" {
+		req.Header.Set("User-Agent", s.cfg.TorBox.UserAgent)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		// Drop the URL from the error so the link's API key stays out of logs.
+		var urlErr *url.Error
+		if errors.As(err, &urlErr) {
+			err = urlErr.Err
+		}
+		return nil, "", fmt.Errorf("fetch: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, "", fmt.Errorf("fetch: %s", resp.Status)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxNZBSize+1))
+	if err != nil {
+		return nil, "", fmt.Errorf("read: %w", err)
+	}
+	if len(body) > maxNZBSize {
+		return nil, "", errors.New("the nzb is larger than 64 MiB")
+	}
+	head := body[:min(len(body), 4096)]
+	if !bytes.Contains(bytes.ToLower(head), []byte("<nzb")) {
+		return nil, "", errors.New("the answer is not an nzb")
+	}
+	filename := "release.nzb"
+	if _, params, err := mime.ParseMediaType(resp.Header.Get("Content-Disposition")); err == nil {
+		if base := filepath.Base(strings.TrimSpace(params["filename"])); base != "" && base != "." && base != string(filepath.Separator) {
+			filename = base
+		}
+	}
+	return body, filename, nil
 }
 
 func (s *Server) handleSABAddFile(w http.ResponseWriter, r *http.Request) {
