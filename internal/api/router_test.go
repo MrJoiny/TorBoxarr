@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -651,13 +652,16 @@ func TestSABConfigCategoriesPage(t *testing.T) {
 	}
 }
 
-func TestSABAddURL(t *testing.T) {
-	env := newTestEnv(t)
+const testNZB = `<?xml version="1.0" encoding="UTF-8"?>
+<nzb xmlns="http://www.newzbin.com/DTD/2003/nzb"><file subject="test"><segments><segment number="1">a@b</segment></segments></file></nzb>`
 
+// sabAddURL submits link through mode=addurl and returns the one SAB job it made.
+func (env *testEnv) sabAddURL(t *testing.T, link string) *store.Job {
+	t.Helper()
 	params := url.Values{
 		"mode":   {"addurl"},
 		"apikey": {"sabapikey123"},
-		"name":   {"https://example.com/test.nzb"},
+		"name":   {link},
 		"cat":    {"tv"},
 	}
 	req := httptest.NewRequest("GET", "/sabnzbd/api?"+params.Encode(), nil)
@@ -667,20 +671,75 @@ func TestSABAddURL(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Errorf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
-
 	var resp map[string]any
 	json.NewDecoder(rec.Body).Decode(&resp)
 	if resp["status"] != true {
 		t.Errorf("status = %v, want true", resp["status"])
 	}
 
-	// Verify job in DB
 	jobs, err := env.store.ListVisibleClientJobs(context.Background(), store.ClientKindSAB, "tv", 100)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(jobs) != 1 {
 		t.Fatalf("got %d SAB jobs, want 1", len(jobs))
+	}
+	return jobs[0]
+}
+
+// A link TorBox cannot reach (here a local test server, in practice an
+// indexer proxy on a private network) is fetched and submitted as a file.
+func TestSABAddURL_FetchesNZBAndSubmitsFile(t *testing.T) {
+	env := newTestEnv(t)
+	nzbServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/x-nzb")
+		w.Header().Set("Content-Disposition", `attachment; filename="Show.S01E01.nzb"`)
+		_, _ = w.Write([]byte(testNZB))
+	}))
+	defer nzbServer.Close()
+
+	job := env.sabAddURL(t, nzbServer.URL+"/api?t=get&id=1&apikey=secret")
+
+	if job.PayloadRef == nil || *job.PayloadRef == "" {
+		t.Fatal("PayloadRef is empty, want the fetched nzb saved as the payload")
+	}
+	if job.SourceURI != nil && *job.SourceURI != "" {
+		t.Errorf("SourceURI = %q, want empty so TorBox gets the file, not the link", *job.SourceURI)
+	}
+	body, err := os.ReadFile(*job.PayloadRef)
+	if err != nil {
+		t.Fatalf("read payload: %v", err)
+	}
+	if string(body) != testNZB {
+		t.Errorf("payload = %q, want the fetched nzb", body)
+	}
+	if !strings.HasSuffix(*job.PayloadRef, "Show.S01E01.nzb") {
+		t.Errorf("PayloadRef = %q, want the Content-Disposition file name", *job.PayloadRef)
+	}
+}
+
+// When the NZB cannot be fetched, or the answer is not an NZB, the link is
+// passed on as before.
+func TestSABAddURL_FallsBackToLink(t *testing.T) {
+	for name, handler := range map[string]http.HandlerFunc{
+		"not found": func(w http.ResponseWriter, r *http.Request) { http.NotFound(w, r) },
+		"html page": func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte("<html>limit reached</html>")) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			env := newTestEnv(t)
+			srv := httptest.NewServer(handler)
+			defer srv.Close()
+			link := srv.URL + "/test.nzb"
+
+			job := env.sabAddURL(t, link)
+
+			if job.SourceURI == nil || *job.SourceURI != link {
+				t.Errorf("SourceURI = %v, want the link %q", job.SourceURI, link)
+			}
+			if job.PayloadRef != nil && *job.PayloadRef != "" {
+				t.Errorf("PayloadRef = %q, want empty", *job.PayloadRef)
+			}
+		})
 	}
 }
 
