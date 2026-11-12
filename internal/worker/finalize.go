@@ -6,6 +6,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/mrjoiny/torboxarr/internal/files"
 	"github.com/mrjoiny/torboxarr/internal/store"
 )
 
@@ -64,6 +65,16 @@ func (o *Orchestrator) processFinalizeJob(ctx context.Context, job *store.Job) e
 		job.ErrorMessage = &msg
 		job.UpdatedAt = time.Now().UTC()
 		return o.store.UpdateJobState(ctx, job, store.StateFailed, msg)
+	}
+
+	// Usenet posters often obfuscate file names. SABnzbd renames the main file
+	// to the job name so the Arr can match it; do the same for NZB jobs.
+	if job.SourceType == store.SourceTypeNZB {
+		if n, err := files.Deobfuscate(completedPath, job.DisplayName); err != nil {
+			o.log.Warn("deobfuscate failed", "job_id", job.ID, "error", err)
+		} else if n > 0 {
+			o.log.Info("deobfuscated file names", "job_id", job.ID, "renamed", n)
+		}
 	}
 
 	o.syncJobBytesFromParts(job, parts)
