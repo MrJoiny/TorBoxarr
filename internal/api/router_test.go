@@ -322,6 +322,80 @@ func TestQBitInfo(t *testing.T) {
 	}
 }
 
+func TestQBitSyncMainData(t *testing.T) {
+	env := newTestEnv(t)
+	sid := env.loginQBit(t)
+
+	env.qbitMultipartAdd(t, sid, map[string]string{
+		"urls":     "magnet:?xt=urn:btih:aaaa1111bbbb2222cccc3333dddd4444eeee5555",
+		"category": "tv",
+	})
+
+	rec := env.qbitRequest(t, "GET", "/api/v2/sync/maindata?rid=7", nil, "", sid)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+	}
+
+	// Decode with qBittorrent's types, as strict clients do.
+	var resp struct {
+		Rid        int64 `json:"rid"`
+		FullUpdate bool  `json:"full_update"`
+		Torrents   map[string]struct {
+			Hash     string `json:"hash"`
+			Category string `json:"category"`
+			State    string `json:"state"`
+		} `json:"torrents"`
+		Categories map[string]struct {
+			Name     string `json:"name"`
+			SavePath string `json:"savePath"`
+		} `json:"categories"`
+		ServerState struct {
+			ConnectionStatus string `json:"connection_status"`
+			FreeSpaceOnDisk  int64  `json:"free_space_on_disk"`
+		} `json:"server_state"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Rid != 8 {
+		t.Errorf("rid = %d, want 8", resp.Rid)
+	}
+	if !resp.FullUpdate {
+		t.Error("full_update = false, want true")
+	}
+	if len(resp.Torrents) != 1 {
+		t.Fatalf("got %d torrents, want 1", len(resp.Torrents))
+	}
+	if _, ok := resp.Torrents["aaaa1111bbbb2222cccc3333dddd4444eeee5555"]; !ok {
+		t.Errorf("torrents not keyed by info hash: %v", resp.Torrents)
+	}
+	for hash, torrent := range resp.Torrents {
+		if torrent.Hash != hash {
+			t.Errorf("torrent keyed %q has hash %q", hash, torrent.Hash)
+		}
+		if torrent.Category != "tv" {
+			t.Errorf("Category = %q, want %q", torrent.Category, "tv")
+		}
+	}
+	if _, ok := resp.Categories["tv"]; !ok {
+		t.Errorf("categories = %v, want tv", resp.Categories)
+	}
+	if resp.ServerState.ConnectionStatus != "connected" {
+		t.Errorf("connection_status = %q, want %q", resp.ServerState.ConnectionStatus, "connected")
+	}
+	if resp.ServerState.FreeSpaceOnDisk <= 0 {
+		t.Errorf("free_space_on_disk = %d, want > 0", resp.ServerState.FreeSpaceOnDisk)
+	}
+}
+
+func TestQBitSyncMainData_Unauthenticated(t *testing.T) {
+	env := newTestEnv(t)
+	rec := env.qbitRequest(t, "GET", "/api/v2/sync/maindata?rid=0", nil, "", "")
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+}
+
 func TestQBitInfo_UsesLocalTransferPartsForProgressAndEta(t *testing.T) {
 	env := newTestEnv(t)
 	sid := env.loginQBit(t)
@@ -484,6 +558,58 @@ func TestQBitDelete(t *testing.T) {
 	job, _ := env.store.GetJobByPublicID(context.Background(), publicID)
 	if job.State != store.StateRemovePending {
 		t.Errorf("State = %q, want %q", job.State, store.StateRemovePending)
+	}
+}
+
+// Clients follow a torrent by the info hash of what they added, so info, its
+// hashes filter and delete all use it; the public ID still works in filters.
+func TestQBit_InfoHashIsTheTorrentHash(t *testing.T) {
+	env := newTestEnv(t)
+	sid := env.loginQBit(t)
+	const infoHash = "aaaa1111bbbb2222cccc3333dddd4444eeee5555"
+	env.qbitMultipartAdd(t, sid, map[string]string{
+		"urls":     "magnet:?xt=urn:btih:" + strings.ToUpper(infoHash),
+		"category": "tv",
+	})
+	jobs, _ := env.store.ListVisibleClientJobs(context.Background(), store.ClientKindQBit, "", 100)
+	if len(jobs) != 1 {
+		t.Fatalf("got %d jobs, want 1", len(jobs))
+	}
+	publicID := jobs[0].PublicID
+
+	hashes := func(query string) []string {
+		t.Helper()
+		rec := env.qbitRequest(t, "GET", "/api/v2/torrents/info"+query, nil, "", sid)
+		var resp []struct {
+			Hash string `json:"hash"`
+		}
+		if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
+			t.Fatalf("decode %s: %v", query, err)
+		}
+		out := make([]string, len(resp))
+		for i, r := range resp {
+			out[i] = r.Hash
+		}
+		return out
+	}
+	if got := hashes(""); len(got) != 1 || got[0] != infoHash {
+		t.Errorf("torrents/info hashes = %v, want [%s]", got, infoHash)
+	}
+	if got := hashes("?hashes=" + strings.ToUpper(infoHash)); len(got) != 1 {
+		t.Errorf("filter by info hash returned %v, want the torrent", got)
+	}
+	if got := hashes("?hashes=" + publicID); len(got) != 1 {
+		t.Errorf("filter by public ID returned %v, want the torrent", got)
+	}
+
+	delForm := url.Values{"hashes": {infoHash}}
+	rec := env.qbitRequest(t, "POST", "/api/v2/torrents/delete", strings.NewReader(delForm.Encode()), "application/x-www-form-urlencoded", sid)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("delete status = %d, want %d", rec.Code, http.StatusOK)
+	}
+	job, _ := env.store.GetJobByPublicID(context.Background(), publicID)
+	if job.State != store.StateRemovePending {
+		t.Errorf("after delete by info hash: State = %q, want %q", job.State, store.StateRemovePending)
 	}
 }
 

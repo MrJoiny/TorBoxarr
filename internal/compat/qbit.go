@@ -25,10 +25,28 @@ type QBitTransferInfo struct {
 	UPRateLimit      int64  `json:"up_rate_limit"`
 }
 
+// QBitMainData is a /api/v2/sync/maindata answer. TorBoxarr keeps no
+// per-client delta history, so every answer is a full update.
 type QBitMainData struct {
-	FullUpdate bool  `json:"full_update"`
-	Torrents   any   `json:"torrents"`
-	Rid        int64 `json:"rid"`
+	Rid         int64                      `json:"rid"`
+	FullUpdate  bool                       `json:"full_update"`
+	Torrents    map[string]QBitTorrentInfo `json:"torrents"`
+	Categories  map[string]QBitCategory    `json:"categories"`
+	ServerState QBitServerState            `json:"server_state"`
+}
+
+type QBitServerState struct {
+	ConnectionStatus  string `json:"connection_status"`
+	DLInfoData        int64  `json:"dl_info_data"`
+	DLInfoSpeed       int64  `json:"dl_info_speed"`
+	DLRateLimit       int64  `json:"dl_rate_limit"`
+	UPInfoData        int64  `json:"up_info_data"`
+	UPInfoSpeed       int64  `json:"up_info_speed"`
+	UPRateLimit       int64  `json:"up_rate_limit"`
+	AllTimeDL         int64  `json:"alltime_dl"`
+	AllTimeUL         int64  `json:"alltime_ul"`
+	FreeSpaceOnDisk   int64  `json:"free_space_on_disk"`
+	UseAltSpeedLimits bool   `json:"use_alt_speed_limits"`
 }
 
 type QBitTorrentInfo struct {
@@ -86,6 +104,47 @@ func ProjectQBitTransferInfo(jobs []*store.Job) QBitTransferInfo {
 	}
 }
 
+func ProjectQBitMainData(rid int64, jobs []*store.Job, categories map[string]QBitCategory, freeSpace int64) QBitMainData {
+	torrents := make(map[string]QBitTorrentInfo, len(jobs))
+	for _, job := range jobs {
+		torrents[QBitHash(job)] = ProjectQBitTorrent(job)
+	}
+	if categories == nil {
+		categories = map[string]QBitCategory{}
+	}
+	transfer := ProjectQBitTransferInfo(jobs)
+	return QBitMainData{
+		Rid:        rid,
+		FullUpdate: true,
+		Torrents:   torrents,
+		Categories: categories,
+		ServerState: QBitServerState{
+			ConnectionStatus: transfer.ConnectionStatus,
+			DLInfoData:       transfer.DLInfoData,
+			DLInfoSpeed:      transfer.DLInfoSpeed,
+			DLRateLimit:      transfer.DLRateLimit,
+			UPInfoData:       transfer.UPInfoData,
+			UPInfoSpeed:      transfer.UPInfoSpeed,
+			UPRateLimit:      transfer.UPRateLimit,
+			AllTimeDL:        transfer.DLInfoData,
+			FreeSpaceOnDisk:  freeSpace,
+		},
+	}
+}
+
+// QBitHash is the hash qBit clients see for a job: the torrent's info hash
+// when TorBoxarr knows it, as real qBittorrent reports, else the public ID.
+// Clients that follow a torrent by the info hash of what they added (magnet
+// or .torrent) need the former to find it again.
+func QBitHash(job *store.Job) string {
+	if job.InfoHash != nil {
+		if h := strings.ToLower(strings.TrimSpace(*job.InfoHash)); h != "" {
+			return h
+		}
+	}
+	return strings.ToLower(job.PublicID)
+}
+
 func ProjectQBitTorrent(job *store.Job) QBitTorrentInfo {
 	done, total := projectLocalTransferBytes(job)
 	progress := projectQBitProgress(job)
@@ -115,8 +174,8 @@ func ProjectQBitTorrent(job *store.Job) QBitTorrentInfo {
 		DLSpeed:      qbitDLSpeed(job),
 		Downloaded:   done,
 		Eta:          qbitETA(job),
-		Hash:         job.PublicID,
-		InfohashV1:   job.PublicID,
+		Hash:         QBitHash(job),
+		InfohashV1:   QBitHash(job),
 		MagnetURI:    magnetURI,
 		Name:         job.DisplayName,
 		Priority:     0,

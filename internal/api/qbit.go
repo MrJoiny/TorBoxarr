@@ -7,10 +7,12 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/mrjoiny/torboxarr/internal/auth"
 	"github.com/mrjoiny/torboxarr/internal/compat"
+	"github.com/mrjoiny/torboxarr/internal/files"
 	"github.com/mrjoiny/torboxarr/internal/store"
 )
 
@@ -245,6 +247,33 @@ func (s *Server) handleQBitInfo(w http.ResponseWriter, r *http.Request) {
 		payload = append(payload, compat.ProjectQBitTorrent(job))
 	}
 	writeJSON(w, http.StatusOK, payload)
+}
+
+// handleQBitSyncMainData serves qBittorrent's change feed. Every answer is a
+// full update with rid one past the client's, which clients that track rid
+// apply like any other full update.
+func (s *Server) handleQBitSyncMainData(w http.ResponseWriter, r *http.Request) {
+	rid, _ := strconv.ParseInt(r.URL.Query().Get("rid"), 10, 64)
+	jobs, err := s.store.ListVisibleClientJobs(r.Context(), store.ClientKindQBit, "", 1000)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	jobs, err = s.withLocalTransferProgress(r.Context(), jobs)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	categories, err := s.qbitCategories(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	freeSpace, err := files.FreeSpace(s.cfg.Data.Completed)
+	if err != nil {
+		s.log.Warn("could not read free space", "path", s.cfg.Data.Completed, "error", err)
+	}
+	writeJSON(w, http.StatusOK, compat.ProjectQBitMainData(max(rid, 0)+1, jobs, categories, freeSpace))
 }
 
 func (s *Server) handleQBitDelete(w http.ResponseWriter, r *http.Request) {
